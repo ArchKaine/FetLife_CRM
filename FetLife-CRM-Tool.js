@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         FetLife Local Cache Filter & CRM
 // @namespace    local.fl.enhancer
-// @version      1.8.0
-// @description  Zero-fetch passive profile & fetish caching, sticky on-screen profile & card controls, manual & auto female-only filtering, Into/Limits split, chat templates, and searchable CRM modal
+// @version      1.9.1
+// @description  Zero-fetch passive profile & fetish caching, toggleable Minimal/Compact/Full card views with persistent match dots, sticky profile controls, manual & auto female-only filtering, and searchable CRM modal
 // @match        https://fetlife.com/*
 // @match        https://*.fetlife.com/*
 // @grant        GM_getValue
@@ -26,6 +26,14 @@
   ];
 
   const STAGE_MAP = Object.fromEntries(PIPELINE_STAGES.map(s => [s.id, s]));
+
+  const VIEW_MODES = ['full', 'compact', 'minimal'];
+  const VIEW_MODE_LABELS = {
+    full: 'View: Full',
+    compact: 'View: Compact',
+    minimal: 'View: Minimal',
+    off: 'View: Off'
+  };
 
   const DEFAULT_HIGHLIGHT_RULES = [
     {
@@ -115,8 +123,10 @@
   const DEFAULT_KEYBINDS = {
     navEnabled: true,
     toggleCrm: 'Alt+C',
+    cycleView: 'v',
     nextCard: 'j',
     prevCard: 'k',
+    toggleMinimal: 'm',
     shortlist: 's',
     pass: 'x',
     cycleGender: 'f',
@@ -125,14 +135,16 @@
   };
 
   const KEYBIND_LABELS = [
-    { key: 'toggleCrm',   label: 'Toggle CRM Modal' },
-    { key: 'nextCard',    label: 'Next Card in List' },
-    { key: 'prevCard',    label: 'Previous Card in List' },
-    { key: 'shortlist',   label: 'Shortlist Focused Card' },
-    { key: 'pass',        label: 'Pass / Hide Focused Card' },
-    { key: 'cycleGender', label: 'Cycle Gender (♀/✕/Auto)' },
-    { key: 'note',        label: 'Edit Note on Card' },
-    { key: 'openTab',     label: 'Open Profile in New Tab' }
+    { key: 'toggleCrm',     label: 'Toggle CRM Modal' },
+    { key: 'cycleView',     label: 'Cycle Global Card View' },
+    { key: 'nextCard',      label: 'Next Card in List' },
+    { key: 'prevCard',      label: 'Previous Card in List' },
+    { key: 'toggleMinimal', label: 'Toggle Focused Card Minimal' },
+    { key: 'shortlist',     label: 'Shortlist Focused Card' },
+    { key: 'pass',          label: 'Pass / Hide Focused Card' },
+    { key: 'cycleGender',   label: 'Cycle Gender (♀/✕/Auto)' },
+    { key: 'note',          label: 'Edit Note on Card' },
+    { key: 'openTab',       label: 'Open Profile in New Tab' }
   ];
 
   const DEFAULT_SETTINGS = {
@@ -150,7 +162,7 @@
     maxAge: 45,
     paused: false,
     hudPosition: 'bottom-right',      // 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left'
-    cardToolbarMode: 'full',          // 'full' | 'compact' | 'off'
+    cardViewMode: 'full',             // 'full' | 'compact' | 'minimal' | 'off'
     cardToolbarPosition: 'top-sticky',// 'top-sticky' | 'top' | 'bottom'
     stickyProfileBar: true,
     showNotesInline: true,
@@ -184,6 +196,9 @@
 
   const NON_FEMALE_GENDER_RE = /\b(m|male|cis\s*male|man|cis\s*man|nb|non-?binary|mtf|ftm|trans\s*woman|trans\s*female|trans\s*man|trans\s*male|transgender|transsexual|gf|genderfluid|gq|genderqueer|ag|agender|is|intersex|cd|crossdresser|tv|transvestite|two-?spirit|amab)\b/i;
   const FEMALE_GENDER_RE = /^(f|female|cis\s*f|cis\s*female|cisgender\s*female|woman|cis\s*woman|cisgender\s*woman)$/i;
+
+  // Per-session per-card view overrides (userKey -> 'minimal' | 'full')
+  const cardViewOverrides = new Map();
 
   // =========================================================================
   // 2. STICKY VIEWPORT TRACKER (SYNCS WITH FETLIFE'S #main-nav)
@@ -389,6 +404,10 @@
     getSettings() {
       const saved = this._read('fl_settings', {});
       const merged = Object.assign({}, DEFAULT_SETTINGS, saved);
+
+      if (!saved.cardViewMode && saved.cardToolbarMode) {
+        merged.cardViewMode = saved.cardToolbarMode;
+      }
 
       if (!Array.isArray(merged.highlightRules) || merged.highlightRules.length === 0) {
         merged.highlightRules = JSON.parse(JSON.stringify(DEFAULT_HIGHLIGHT_RULES));
@@ -1384,13 +1403,21 @@
   }
 
   // =========================================================================
-  // 7. SHARED UI COMPONENTS (MULTI-CATEGORY DOTS, STAGE & GENDER CONTROLS)
+  // 7. SHARED UI COMPONENTS & MINIMAL/COMPACT/FULL CARD VIEW ENGINE
   // =========================================================================
-  function createMatchDotsCluster(ruleHits) {
+  function createMatchDotsCluster(ruleHits, limitConflicts = [], excludedHits = []) {
     if (!ruleHits || ruleHits.length === 0) return null;
     const wrap = document.createElement('span');
-    wrap.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:2px 6px;border-radius:999px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);';
-    wrap.title = ruleHits.map(h => `${h.label}: ${h.keyword}`).join(' • ');
+    wrap.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:2px 6px;border-radius:999px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);';
+
+    const tooltipLines = ruleHits.map(h => `${h.label}: ${h.keyword}`);
+    if (limitConflicts.length > 0) {
+      tooltipLines.push(`⚠ Limits: ${limitConflicts.map(c => c.keyword).join(', ')}`);
+    }
+    if (excludedHits.length > 0) {
+      tooltipLines.push(`Excludes: -${excludedHits.join(', -')}`);
+    }
+    wrap.title = tooltipLines.join(' • ');
 
     for (const hit of ruleHits) {
       const dot = document.createElement('span');
@@ -1401,7 +1428,7 @@
     return wrap;
   }
 
-  function createDemographicPill(age, gender, genderRole, location, isManualGender = false) {
+  function formatDemographicSummary(age, gender, genderRole, location, isManualGender = false) {
     const parts = [];
     if (genderRole) {
       parts.push(isManualGender ? `${genderRole} (${gender})` : genderRole);
@@ -1410,13 +1437,18 @@
       if (head) parts.push(head);
     }
     if (location) parts.push(location);
-    if (parts.length === 0) return null;
+    return parts.join(' • ');
+  }
+
+  function createDemographicPill(age, gender, genderRole, location, isManualGender = false) {
+    const summary = formatDemographicSummary(age, gender, genderRole, location, isManualGender);
+    if (!summary) return null;
 
     const pill = document.createElement('span');
     pill.style.cssText = isManualGender
       ? 'font-size:11px;color:#f9a8d4;background:rgba(244,114,182,0.14);border:1px solid rgba(244,114,182,0.35);padding:1px 6px;border-radius:4px;font-weight:500;'
       : 'font-size:11px;color:#cbd5e1;background:rgba(148,163,184,0.12);border:1px solid rgba(148,163,184,0.25);padding:1px 6px;border-radius:4px;font-weight:500;';
-    pill.textContent = parts.join(' • ');
+    pill.textContent = summary;
     return pill;
   }
 
@@ -1504,15 +1536,52 @@
     }
   }
 
-  function buildToolbar(userKey, settings, onUpdate, forceFull = false, displayHandle = null, demos = null, isStickyTop = false) {
+  // Safely hides or restores native FetLife child elements inside a card container
+  function setContainerNativeContentHidden(container, shouldHide) {
+    for (const child of container.children) {
+      if (child.classList && child.classList.contains('flx-toolbar')) continue;
+      if (shouldHide) {
+        if (!('flxOrigDisplay' in child.dataset)) {
+          child.dataset.flxOrigDisplay = child.style.display || '';
+        }
+        child.style.display = 'none';
+      } else if ('flxOrigDisplay' in child.dataset) {
+        child.style.display = child.dataset.flxOrigDisplay;
+        delete child.dataset.flxOrigDisplay;
+      }
+    }
+  }
+
+  function buildToolbar(userKey, settings, onUpdate, options = {}) {
+    const {
+      viewMode = 'full',      // 'full' | 'compact' | 'minimal'
+      isProfileBar = false,
+      displayHandle = null,
+      profileUrl = null,
+      demos = null,
+      isStickyTop = false,
+      onToggleCardView = null
+    } = options;
+
     const record = Store.getUser(userKey);
-    const compact = !forceFull && settings.cardToolbarMode === 'compact';
+    const isMinimal = !isProfileBar && viewMode === 'minimal';
+    const isCompact = !isProfileBar && viewMode === 'compact';
+    const compactControls = !isProfileBar && (isCompact || isMinimal);
 
     const bar = document.createElement('div');
     bar.className = 'flx-toolbar';
-    bar.style.cssText = isStickyTop
-      ? 'display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin:0 0 6px 0;padding:5px 8px;position:sticky;top:var(--flx-sticky-top, 62px);z-index:25;background:rgba(20,20,25,0.94);backdrop-filter:blur(8px);border:1px solid #30303a;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.45);font-family:system-ui,-apple-system,sans-serif;'
-      : 'display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin-top:6px;margin-bottom:4px;position:relative;z-index:5;font-family:system-ui,-apple-system,sans-serif;';
+
+    if (isMinimal) {
+      // Single-line minimal strip: no pills, prioritizes speed & colored dots
+      bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin:2px 0;padding:4px 8px;background:rgba(22,22,27,0.9);border:1px solid #2e2e38;border-radius:6px;position:relative;z-index:5;font-family:system-ui,-apple-system,sans-serif;';
+    } else if (isCompact) {
+      // Unobtrusive inline bar in compact mode so original card content stays front-and-center
+      bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin:0 0 4px 0;padding:2px 0;background:transparent;border:none;position:relative;z-index:5;font-family:system-ui,-apple-system,sans-serif;';
+    } else if (isStickyTop) {
+      bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin:0 0 6px 0;padding:5px 8px;position:sticky;top:var(--flx-sticky-top, 62px);z-index:25;background:rgba(20,20,25,0.94);backdrop-filter:blur(8px);border:1px solid #30303a;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.45);font-family:system-ui,-apple-system,sans-serif;';
+    } else {
+      bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin-top:6px;margin-bottom:4px;position:relative;z-index:5;font-family:system-ui,-apple-system,sans-serif;';
+    }
 
     const stopNav = (e) => {
       e.preventDefault();
@@ -1539,13 +1608,46 @@
 
     const baseBtnStyle = 'background:#202024;color:#d4d4d8;border:1px solid #3f3f46;border-radius:5px;padding:2px 7px;cursor:pointer;font-size:11px;line-height:1.45;transition:background 0.15s,border-color 0.15s;';
 
+    // Per-Card Expand / Minimize Toggle Button
+    if (!isProfileBar && typeof onToggleCardView === 'function') {
+      const viewToggleBtn = document.createElement('button');
+      viewToggleBtn.type = 'button';
+      viewToggleBtn.style.cssText = isMinimal
+        ? `${baseBtnStyle}background:rgba(56,189,248,0.14);border-color:#0284c7;color:#7dd3fc;font-weight:700;padding:2px 6px;`
+        : `${baseBtnStyle}color:#9ca3af;padding:2px 6px;`;
+      viewToggleBtn.textContent = isMinimal ? '▸' : '▾';
+      viewToggleBtn.title = isMinimal
+        ? 'Expand card to Full view (M)'
+        : 'Collapse card to Minimal strip (M)';
+      viewToggleBtn.addEventListener('click', (e) => {
+        stopNav(e);
+        onToggleCardView();
+      });
+      bar.appendChild(viewToggleBtn);
+    }
+
+    // In Minimal view, render a clean clickable /username link (demographics shown in hover tooltip, no pills)
+    if (isMinimal) {
+      const handleText = displayHandle || userKey;
+      const userLink = document.createElement('a');
+      userLink.href = profileUrl || `${window.location.origin}/${handleText}`;
+      userLink.textContent = `/${handleText}`;
+      const demoSummary = formatDemographicSummary(demos?.age, demos?.gender, demos?.genderRole, demos?.location, demos?.isManualGender);
+      if (demoSummary) {
+        userLink.title = `${handleText} • ${demoSummary}`;
+      }
+      userLink.style.cssText = 'color:#93c5fd;font-weight:700;font-size:12px;text-decoration:none;margin-right:2px;';
+      userLink.addEventListener('click', (e) => e.stopPropagation());
+      bar.appendChild(userLink);
+    }
+
     const isStarred = record.status === 'shortlist';
     const starBtn = document.createElement('button');
     starBtn.type = 'button';
     starBtn.style.cssText = isStarred
       ? `${baseBtnStyle}background:rgba(251,191,36,0.18);border-color:#d97706;color:#fde047;font-weight:600;`
       : baseBtnStyle;
-    starBtn.textContent = compact ? (isStarred ? '★' : '☆') : (isStarred ? '★ Shortlisted' : '☆ Shortlist');
+    starBtn.textContent = compactControls ? (isStarred ? '★' : '☆') : (isStarred ? '★ Shortlisted' : '☆ Shortlist');
     starBtn.title = 'Toggle Shortlist';
     starBtn.addEventListener('click', (e) => {
       stopNav(e);
@@ -1561,7 +1663,7 @@
 
     const noneOpt = document.createElement('option');
     noneOpt.value = '';
-    noneOpt.textContent = compact ? 'Stage…' : 'Stage: None';
+    noneOpt.textContent = compactControls ? 'Stage…' : 'Stage: None';
     noneOpt.style.background = '#18181b';
     noneOpt.style.color = '#e4e4e7';
     stageSelect.appendChild(noneOpt);
@@ -1586,7 +1688,7 @@
       record,
       demos?.autoDetected || null,
       (nextManualGender) => persistMeta({ manualGender: nextManualGender }),
-      compact
+      compactControls
     );
 
     const isPassed = record.status === 'hidden';
@@ -1595,7 +1697,7 @@
     passBtn.style.cssText = isPassed
       ? `${baseBtnStyle}background:rgba(248,113,113,0.18);border-color:#dc2626;color:#fca5a5;font-weight:600;`
       : baseBtnStyle;
-    passBtn.textContent = compact ? '✕' : (isPassed ? '✕ Passed' : '✕ Pass');
+    passBtn.textContent = compactControls ? '✕' : (isPassed ? '✕ Passed' : '✕ Pass');
     passBtn.title = 'Pass / Hide Profile';
     passBtn.addEventListener('click', (e) => {
       stopNav(e);
@@ -1607,8 +1709,8 @@
     noteBtn.style.cssText = record.note
       ? `${baseBtnStyle}background:rgba(212,175,55,0.15);border-color:#b45309;color:#fcd34d;`
       : baseBtnStyle;
-    noteBtn.textContent = compact ? '✎' : (record.note ? '✎ Edit Note' : '✎ Note');
-    noteBtn.title = 'Edit Private Note';
+    noteBtn.textContent = compactControls ? '✎' : (record.note ? '✎ Edit Note' : '✎ Note');
+    noteBtn.title = record.note ? `Private Note: ${record.note}` : 'Edit Private Note';
     noteBtn.addEventListener('click', (e) => {
       stopNav(e);
       const cur = Store.getUser(userKey);
@@ -1620,47 +1722,54 @@
 
     bar.append(starBtn, stageSelect, genderSelect, passBtn, noteBtn);
 
-    if (!compact && record.lastContacted && record.status !== 'hidden') {
-      const contacted = document.createElement('span');
-      contacted.style.cssText = 'font-size:11px;color:#7dd3fc;padding:1px 6px;background:rgba(56,189,248,0.1);border:1px solid rgba(56,189,248,0.28);border-radius:4px;';
-      contacted.textContent = `Contacted ${record.lastContacted}`;
-      bar.appendChild(contacted);
-    } else if (!compact && record.lastSeen && record.status !== 'hidden') {
-      const seen = document.createElement('span');
-      seen.style.cssText = 'font-size:11px;color:#9ca3af;padding:1px 6px;border:1px solid #333;border-radius:4px;';
-      seen.textContent = `Viewed ${record.lastSeen}`;
-      bar.appendChild(seen);
-    }
+    // Text metadata pills and inline note boxes only render in Full mode (or on the Profile Page bar)
+    if (isProfileBar || viewMode === 'full') {
+      if (record.lastContacted && record.status !== 'hidden') {
+        const contacted = document.createElement('span');
+        contacted.style.cssText = 'font-size:11px;color:#7dd3fc;padding:1px 6px;background:rgba(56,189,248,0.1);border:1px solid rgba(56,189,248,0.28);border-radius:4px;';
+        contacted.textContent = `Contacted ${record.lastContacted}`;
+        bar.appendChild(contacted);
+      } else if (record.lastSeen && record.status !== 'hidden') {
+        const seen = document.createElement('span');
+        seen.style.cssText = 'font-size:11px;color:#9ca3af;padding:1px 6px;border:1px solid #333;border-radius:4px;';
+        seen.textContent = `Viewed ${record.lastSeen}`;
+        bar.appendChild(seen);
+      }
 
-    if (record.note && (forceFull || settings.showNotesInline)) {
-      const noteBox = document.createElement('div');
-      noteBox.style.cssText = 'width:100%;margin-top:4px;padding:5px 9px;background:#16161a;border-left:2px solid #eab308;color:#e4e4e7;font-size:12px;white-space:pre-wrap;border-radius:4px;';
-      noteBox.textContent = record.note;
-      bar.appendChild(noteBox);
+      if (record.note && (isProfileBar || settings.showNotesInline)) {
+        const noteBox = document.createElement('div');
+        noteBox.style.cssText = 'width:100%;margin-top:4px;padding:5px 9px;background:#16161a;border-left:2px solid #eab308;color:#e4e4e7;font-size:12px;white-space:pre-wrap;border-radius:4px;';
+        noteBox.textContent = record.note;
+        bar.appendChild(noteBox);
+      }
     }
 
     return bar;
   }
 
-  function appendMatchBadges(toolbar, cachedBio, demos, missingAbout, ageRejected, genderRejected, ruleHits, limitConflicts, excludedHits, showFullMeta) {
+  function appendMatchBadges(toolbar, cachedBio, demos, missingAbout, ageRejected, genderRejected, ruleHits, limitConflicts, excludedHits, viewMode) {
+    // Always keep the little colored category dots in Full, Compact, AND Minimal modes
+    const dotsCluster = createMatchDotsCluster(ruleHits, limitConflicts, excludedHits);
+    if (dotsCluster) {
+      toolbar.appendChild(dotsCluster);
+    }
+
+    // Hide all larger text pills/badges in Compact and Minimal modes to prioritize original card content
+    if (viewMode !== 'full') return;
+
     const demoPill = createDemographicPill(demos?.age, demos?.gender, demos?.genderRole, demos?.location, demos?.isManualGender);
-    if (demoPill && showFullMeta) {
+    if (demoPill) {
       toolbar.appendChild(demoPill);
     }
 
-    if (demos?.relationships && showFullMeta) {
+    if (demos?.relationships) {
       const relPill = document.createElement('span');
       relPill.style.cssText = 'font-size:11px;color:#d8b4fe;background:rgba(168,85,247,0.12);border:1px solid rgba(168,85,247,0.28);padding:1px 6px;border-radius:4px;';
       relPill.textContent = demos.relationships;
       toolbar.appendChild(relPill);
     }
 
-    const dotsCluster = createMatchDotsCluster(ruleHits);
-    if (dotsCluster) {
-      toolbar.appendChild(dotsCluster);
-    }
-
-    if (cachedBio && showFullMeta) {
+    if (cachedBio) {
       const bioBadge = document.createElement('span');
       bioBadge.style.cssText = 'font-size:10px;color:#9ca3af;padding:1px 6px;border:1px solid #333;border-radius:4px;';
       const hasFetishes = Boolean((cachedBio.fetishesInto && cachedBio.fetishesInto.length > 0) || (cachedBio.fetishesLimits && cachedBio.fetishesLimits.length > 0));
@@ -1755,7 +1864,7 @@
       const handle = target.dataset.flxHandle || target.dataset.flxUser || 'profile';
       const kb = Store.getSettings().keybinds;
       this.showToast(
-        `Card ${clamped + 1}/${cards.length}: /${handle}  •  [${kb.shortlist.toUpperCase()}] Shortlist  [${kb.cycleGender.toUpperCase()}] Gender  [${kb.pass.toUpperCase()}] Pass  [${kb.note.toUpperCase()}] Note  [${kb.openTab.toUpperCase()}] Open`
+        `Card ${clamped + 1}/${cards.length}: /${handle}  •  [${kb.toggleMinimal.toUpperCase()}] View  [${kb.shortlist.toUpperCase()}] Shortlist  [${kb.cycleGender.toUpperCase()}] Gender  [${kb.pass.toUpperCase()}] Pass  [${kb.openTab.toUpperCase()}] Open`
       );
       return target;
     },
@@ -1786,6 +1895,17 @@
       const handle = card.dataset.flxHandle || userKey;
       const url = card.dataset.flxProfileUrl || `${window.location.origin}/${handle}`;
       if (!userKey) return;
+
+      if (action === 'toggleMinimal') {
+        const globalMode = Store.getSettings().cardViewMode || 'full';
+        const curEffective = card.dataset.flxEffectiveView || globalMode;
+        const nextMode = curEffective === 'minimal' ? 'full' : 'minimal';
+        cardViewOverrides.set(userKey, nextMode);
+        runAll();
+        this.focusCard(this.activeIndex);
+        this.showToast(`/${handle} → ${nextMode === 'minimal' ? 'Minimal strip' : 'Full view'}`);
+        return;
+      }
 
       if (action === 'openTab') {
         openProfileInBackgroundTab(url);
@@ -1870,6 +1990,12 @@
     const bioText = cachedBio ? cachedBio.text : '';
     const resolvedGender = resolveEffectiveGender(record, cachedBio, identity.demographics);
 
+    const globalViewMode = settings.cardViewMode || 'full';
+    const overrideMode = cardViewOverrides.get(userKey);
+    const effectiveViewMode = globalViewMode === 'off'
+      ? 'off'
+      : (overrideMode || globalViewMode);
+
     const mergedDemos = {
       age: identity.demographics?.age ?? record.age ?? cachedBio?.age ?? null,
       gender: resolvedGender.gender,
@@ -1886,9 +2012,12 @@
     const ageRejected = isAgeOutOfRange(mergedDemos.age, settings);
     const genderRejected = isGenderRejected(mergedDemos.isFemale, settings);
 
-    const clone = container.cloneNode(true);
-    clone.querySelectorAll('.flx-toolbar').forEach(el => el.remove());
-    const itemText = clone.innerText || '';
+    if (!container.dataset.flxRawItemText) {
+      const clone = container.cloneNode(true);
+      clone.querySelectorAll('.flx-toolbar').forEach(el => el.remove());
+      container.dataset.flxRawItemText = (clone.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+    const itemText = container.dataset.flxRawItemText;
     const combinedPositiveText = bioText ? `${itemText}\n${bioText}` : itemText;
 
     const excludedHits = findSimpleMatches(combinedPositiveText, settings.excludeKeywords);
@@ -1897,6 +2026,7 @@
 
     const sig = JSON.stringify({
       userKey,
+      effectiveViewMode,
       status: record.status,
       manualGender: record.manualGender,
       note: record.note,
@@ -1913,7 +2043,6 @@
       maxAge: settings.maxAge,
       hideMode: settings.hideMode,
       dimOpacity: settings.dimOpacity,
-      cardToolbarMode: settings.cardToolbarMode,
       cardToolbarPosition: settings.cardToolbarPosition,
       showNotesInline: settings.showNotesInline,
       excludedHits,
@@ -1927,20 +2056,42 @@
     container.dataset.flxUser = userKey;
     container.dataset.flxHandle = identity.username || record.username || userKey;
     container.dataset.flxProfileUrl = identity.profileUrl;
+    container.dataset.flxEffectiveView = effectiveViewMode;
     container.dataset.flxSig = sig;
 
     const isFilteredOut = record.status === 'hidden' || excludedHits.length > 0 || missingAbout || ageRejected || genderRejected;
     applyCardAccentStyle(container, record.status, ruleHits, isFilteredOut, settings);
 
+    // Toggle native FetLife card children for Minimal vs. Compact/Full views
+    setContainerNativeContentHidden(container, effectiveViewMode === 'minimal');
+
     const oldBar = container.querySelector('.flx-toolbar');
     if (oldBar) oldBar.remove();
 
-    if (settings.cardToolbarMode !== 'off') {
+    if (effectiveViewMode !== 'off') {
       const pos = settings.cardToolbarPosition || 'top-sticky';
-      const isStickyTop = pos === 'top-sticky';
-      const toolbar = buildToolbar(userKey, settings, () => {
-        withObserverPaused(() => applyContainerState(container, identity, Store.getSettings(), true));
-      }, false, identity.username, mergedDemos, isStickyTop);
+      const isStickyTop = pos === 'top-sticky' && effectiveViewMode === 'full';
+
+      const toolbar = buildToolbar(
+        userKey,
+        settings,
+        () => {
+          withObserverPaused(() => applyContainerState(container, identity, Store.getSettings(), true));
+        },
+        {
+          viewMode: effectiveViewMode,
+          isProfileBar: false,
+          displayHandle: identity.username,
+          profileUrl: identity.profileUrl,
+          demos: mergedDemos,
+          isStickyTop,
+          onToggleCardView: () => {
+            const nextOverride = effectiveViewMode === 'minimal' ? 'full' : 'minimal';
+            cardViewOverrides.set(userKey, nextOverride);
+            withObserverPaused(() => applyContainerState(container, identity, Store.getSettings(), true));
+          }
+        }
+      );
 
       appendMatchBadges(
         toolbar,
@@ -1952,10 +2103,10 @@
         ruleHits,
         limitConflicts,
         excludedHits,
-        settings.cardToolbarMode === 'full'
+        effectiveViewMode
       );
 
-      if (pos === 'bottom') {
+      if (pos === 'bottom' && effectiveViewMode === 'full') {
         container.appendChild(toolbar);
       } else {
         container.insertBefore(toolbar, container.firstChild);
@@ -2092,7 +2243,19 @@
       label.style.cssText = 'font-size:12px;color:#f4f4f5;font-family:system-ui,sans-serif;';
       label.textContent = `/${displayHandle}`;
 
-      const toolbar = buildToolbar(currentKey, settings, () => withObserverPaused(renderProfileBar), true, profilePage.username, demos, false);
+      const toolbar = buildToolbar(
+        currentKey,
+        settings,
+        () => withObserverPaused(renderProfileBar),
+        {
+          viewMode: 'full',
+          isProfileBar: true,
+          displayHandle: profilePage.username,
+          profileUrl: profilePage.url,
+          demos,
+          isStickyTop: false
+        }
+      );
       toolbar.style.marginTop = '0';
       toolbar.style.marginBottom = '0';
       toolbar.style.flex = '1';
@@ -2105,9 +2268,8 @@
       const ageRejected = isAgeOutOfRange(demos.age, settings);
       const genderRejected = isGenderRejected(demos.isFemale, settings);
 
-      appendMatchBadges(toolbar, latestBio, demos, missingAbout, ageRejected, genderRejected, ruleHits, limitConflicts, excludedHits, true);
+      appendMatchBadges(toolbar, latestBio, demos, missingAbout, ageRejected, genderRejected, ruleHits, limitConflicts, excludedHits, 'full');
 
-      // Quick Sticky Pin/Unpin button right on the profile bar
       const pinBtn = document.createElement('button');
       pinBtn.type = 'button';
       pinBtn.style.cssText = isSticky
@@ -2255,7 +2417,7 @@
       );
       if (demoPill) left.appendChild(demoPill);
 
-      const dots = createMatchDotsCluster(ruleHits);
+      const dots = createMatchDotsCluster(ruleHits, limitConflicts, excludedHits);
       if (dots) left.appendChild(dots);
 
       const tplSel = document.createElement('select');
@@ -3067,7 +3229,7 @@
         const demoPill = createDemographicPill(entry.age, entry.gender, entry.genderRole, entry.location, entry.isManualGender);
         if (demoPill) leftInfo.appendChild(demoPill);
 
-        const dots = createMatchDotsCluster(entry.ruleHits);
+        const dots = createMatchDotsCluster(entry.ruleHits, entry.limitConflicts, entry.excludedHits);
         if (dots) leftInfo.appendChild(dots);
 
         const badges = document.createElement('div');
@@ -3344,7 +3506,7 @@
   };
 
   // =========================================================================
-  // 11. SHADOW DOM FLOATING HUD (MOUNTED TO <html> TO SURVIVE TURBO SWAPS)
+  // 11. SHADOW DOM FLOATING HUD (WITH QUICK CARD VIEW CYCLE BUTTON)
   // =========================================================================
   const Hud = {
     shadow: null,
@@ -3352,6 +3514,7 @@
     expanded: false,
     countSpan: null,
     cacheSpan: null,
+    viewModeBtn: null,
     showHiddenBtn: null,
     pauseBtn: null,
     panel: null,
@@ -3375,10 +3538,25 @@
         this.host.style.top = '64px';
         this.host.style.left = '16px';
       } else {
-        // Offset 76px from right edge so it never overlaps FetLife's #chat-dock launcher
         this.host.style.bottom = '16px';
         this.host.style.right = '76px';
       }
+    },
+
+    cycleGlobalCardView() {
+      const s = Store.getSettings();
+      const cur = s.cardViewMode || 'full';
+      const idx = VIEW_MODES.indexOf(cur);
+      const next = VIEW_MODES[(idx + 1) % VIEW_MODES.length];
+      cardViewOverrides.clear();
+      Store.saveSettings({ cardViewMode: next });
+      this.syncQuickButtons();
+      if (this.expanded && this.shadow) {
+        const viewSel = this.shadow.getElementById('in-view-mode');
+        if (viewSel) viewSel.value = next;
+      }
+      runAll();
+      CardNavigator.showToast(`Cards → ${VIEW_MODE_LABELS[next] || next}`);
     },
 
     init() {
@@ -3411,7 +3589,7 @@
           .box {
             background: rgba(20, 20, 24, 0.96); backdrop-filter: blur(10px);
             border: 1px solid #383842; border-radius: 10px; padding: 8px 10px;
-            box-shadow: 0 8px 28px rgba(0,0,0,0.75); width: min(430px, calc(100vw - 32px)); max-height: 82vh; overflow-y: auto;
+            box-shadow: 0 8px 28px rgba(0,0,0,0.75); width: min(440px, calc(100vw - 32px)); max-height: 82vh; overflow-y: auto;
           }
           .box.collapsed { width: auto; overflow: visible; }
           .row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -3421,6 +3599,7 @@
           }
           button:hover { background: #303038; color: #fff; }
           button.star { background: rgba(234, 179, 8, 0.18); border-color: #ca8a04; color: #fde047; font-weight: 600; }
+          button.sky { background: rgba(56, 189, 248, 0.16); border-color: #0284c7; color: #7dd3fc; font-weight: 600; }
           button.danger { background: rgba(239, 68, 68, 0.18); border-color: #dc2626; color: #fca5a5; }
           button.capturing { background: rgba(56, 189, 248, 0.22); border-color: #0284c7; color: #7dd3fc; font-weight: 600; }
           .scan-pill {
@@ -3459,6 +3638,7 @@
           <div class="row">
             <button type="button" id="btn-toggle">FL (<span id="card-count">0</span>) ▲</button>
             <button type="button" class="star" id="btn-crm">CRM</button>
+            <button type="button" id="btn-view-mode" title="Cycle card view: Full / Compact / Minimal (V)">View: Full</button>
             <button type="button" id="btn-hidden"></button>
             <button type="button" id="btn-pause"></button>
             <span class="scan-pill" id="cache-status">Cached: 0</span>
@@ -3474,16 +3654,17 @@
                     <option value="top-left">Top Left</option>
                   </select>
                 </label>
-                <label>Card Buttons
-                  <select id="in-toolbar">
-                    <option value="full">Full Labels</option>
-                    <option value="compact">Compact Icons</option>
-                    <option value="off">Hidden on Cards</option>
+                <label>Card View Mode
+                  <select id="in-view-mode">
+                    <option value="full">Full Card + Pills</option>
+                    <option value="compact">Compact (Dots Only)</option>
+                    <option value="minimal">Minimal Strip (Dots Only)</option>
+                    <option value="off">Hidden Toolbars</option>
                   </select>
                 </label>
               </div>
               <div class="grid2">
-                <label>Card Toolbar Placement
+                <label>Full Toolbar Placement
                   <select id="in-toolbar-pos">
                     <option value="top-sticky">Top of Card (Sticky)</option>
                     <option value="top">Top of Card</option>
@@ -3523,7 +3704,7 @@
                 <input type="checkbox" id="in-sticky-profile"> Pin profile bar to top while scrolling
               </label>
               <label class="inline-label">
-                <input type="checkbox" id="in-notes"> Show private notes inline on cards
+                <input type="checkbox" id="in-notes"> Show private notes inline (Full mode)
               </label>
               <label class="inline-label">
                 <input type="checkbox" id="in-noabout"> Hide cached profiles with no "About" section
@@ -3592,6 +3773,7 @@
       this.panel = $('hud-panel');
       this.countSpan = $('card-count');
       this.cacheSpan = $('cache-status');
+      this.viewModeBtn = $('btn-view-mode');
       this.showHiddenBtn = $('btn-hidden');
       this.pauseBtn = $('btn-pause');
 
@@ -3720,7 +3902,7 @@
         this.capturingKeyAction = null;
 
         $('in-pos').value = s.hudPosition;
-        $('in-toolbar').value = s.cardToolbarMode;
+        $('in-view-mode').value = s.cardViewMode || 'full';
         $('in-toolbar-pos').value = s.cardToolbarPosition || 'top-sticky';
         $('in-mode').value = s.hideMode;
         $('in-opacity').value = s.dimOpacity;
@@ -3750,6 +3932,8 @@
         if (CrmModal.isOpen) CrmModal.close();
         else CrmModal.open();
       });
+
+      this.viewModeBtn.addEventListener('click', () => this.cycleGlobalCardView());
 
       $('btn-add-rule').addEventListener('click', () => addRuleRow());
       $('btn-add-tpl').addEventListener('click', () => addTemplateRow());
@@ -3841,9 +4025,10 @@
           navEnabled: $('in-kb-nav').checked
         });
 
+        cardViewOverrides.clear();
         const next = Store.saveSettings({
           hudPosition: $('in-pos').value,
-          cardToolbarMode: $('in-toolbar').value,
+          cardViewMode: $('in-view-mode').value,
           cardToolbarPosition: $('in-toolbar-pos').value,
           hideMode: $('in-mode').value,
           dimOpacity: parseFloat($('in-opacity').value) || 0.18,
@@ -3862,10 +4047,11 @@
         });
 
         this.applyPosition(next.hudPosition);
+        this.syncQuickButtons();
         Array.from(document.getElementsByClassName('flx-profile-bar')).forEach(el => el.remove());
         runAll();
         refreshStorageLabel();
-        $('hud-status').textContent = '✓ Saved UI, sticky layout, filters & keybinds';
+        $('hud-status').textContent = '✓ Saved UI, card view mode, filters & keybinds';
         setTimeout(() => { $('hud-status').textContent = ''; }, 2500);
       });
 
@@ -3920,6 +4106,14 @@
 
     syncQuickButtons() {
       const s = Store.getSettings();
+      const mode = s.cardViewMode || 'full';
+
+      if (this.viewModeBtn) {
+        this.viewModeBtn.className = mode === 'minimal' ? 'sky' : (mode === 'compact' ? 'star' : '');
+        this.viewModeBtn.textContent = VIEW_MODE_LABELS[mode] || 'View: Full';
+        this.viewModeBtn.title = `Cycle global card view (${s.keybinds?.cycleView || 'v'})`;
+      }
+
       this.showHiddenBtn.className = s.showHidden ? 'star' : '';
       this.showHiddenBtn.textContent = s.showHidden ? 'Showing Passed' : 'Passed Filtered';
       this.pauseBtn.className = s.paused ? 'danger' : '';
@@ -4024,7 +4218,15 @@
       }
     }
 
-    if (!kb.navEnabled || settings.paused || CrmModal.isOpen || isEditableTarget(e)) return;
+    if (settings.paused || CrmModal.isOpen || isEditableTarget(e)) return;
+
+    if (kb.cycleView && matchesKeyCombo(e, kb.cycleView)) {
+      e.preventDefault();
+      Hud.cycleGlobalCardView();
+      return;
+    }
+
+    if (!kb.navEnabled) return;
 
     if (matchesKeyCombo(e, kb.nextCard)) {
       e.preventDefault();
@@ -4032,6 +4234,9 @@
     } else if (matchesKeyCombo(e, kb.prevCard)) {
       e.preventDefault();
       CardNavigator.step(-1);
+    } else if (matchesKeyCombo(e, kb.toggleMinimal)) {
+      e.preventDefault();
+      CardNavigator.actOnFocused('toggleMinimal');
     } else if (matchesKeyCombo(e, kb.shortlist)) {
       e.preventDefault();
       CardNavigator.actOnFocused('shortlist');
