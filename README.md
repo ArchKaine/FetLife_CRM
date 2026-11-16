@@ -1,90 +1,91 @@
 # FetLife_CRM
 
-A local-only FetLife CRM and profile filtering userscript (`v1.8.0`) designed to help you screen, tag, track, and follow up with profiles without sending any data off your browser. Built for **Violentmonkey** and intended to stay entirely in-browser.
+A local-only FetLife CRM and profile filtering userscript (`v1.9.1`) designed to help you screen, tag, track, and follow up with profiles while browsing. It runs in Violentmonkey and keeps its settings, notes, and profile cache in your browser.
 
 ## What this tool does
 
-* **Always-visible sticky controls & Chat Dock clearance**
-  * **Sticky Profile Bar:** Pins the `Profile (/Username)` CRM bar directly below FetLife's top navigation bar (`#main-nav`) while you scroll through long **About**, **Fetishes**, and **Writings** pages.
-  * **Top-Sticky Card Toolbars:** Places card/post controls at the top of each card (**`Top of Card (Sticky)`** by default, switchable to `Top of Card` or `Bottom of Card` in the HUD) so you can shift through cards without losing the action strip.
-  * **Turbo-Persistent HUD & Dock Clearance:** Mounts the floating HUD onto `<html>` (`document.documentElement`) so Turbo Drive page transitions never remove or flicker the controls, and offsets the chat dock so the CRM stays clear while you message.
-* **Card presentation controls & inline compact mode**
-  * The HUD includes **Card Buttons** controls for **Full Labels**, **Compact Icons**, or **Hidden on Cards**, plus configurable placement so you can keep the toolbar readable or visually minimal.
-  * Inline cards can be switched between a richer full presentation and a lighter compact summary for faster scanning, while still keeping the same CRM state and profile metadata visible.
+* **Sticky profile controls & Chat Dock clearance**
+  * **Sticky Profile Bar:** Pins the profile CRM bar beneath FetLife's top navigation while you scroll through long profile sections. Use the pin button on the bar or the HUD setting to enable or disable it.
+  * **Card Toolbar Placement:** Places card controls at the top of cards (sticky by default), at the top without sticking, or at the bottom. Configure placement in the HUD.
+  * **Turbo-Persistent HUD:** Mounts the floating HUD on the document root so it survives FetLife Turbo page transitions. Its default bottom-right placement is offset to avoid the chat-dock launcher.
+* **Toggleable Full, Compact, and Minimal card views**
+  * Use the HUD's **View: Full** button or press `v` to cycle the global card view through **Full**, **Compact**, and **Minimal**. The HUD setting also offers **Off** to hide card toolbars.
+  * Each tracked card has an inline expand/minimize control. Click it or focus the card and press `m` to switch that card between **Minimal** and **Full**, without changing the global setting. These per-card overrides last for the current page session; they are not saved to the CRM database.
+  * **Full** shows the detailed card toolbar, metadata pills, and configured inline notes. **Compact** keeps the original FetLife card visible with compact CRM controls and match dots. **Minimal** hides the card's native content and shows a slim CRM strip with a profile link, compact controls, and colored match dots. Match dots remain available in all three views; **Off** hides the toolbar.
 * **Female-only filtering & manual gender overrides**
-  * **`Female only`** is enabled by default, automatically filtering confirmed non-female gender markers while leaving untagged list cards visible until visited or classified.
-  * **Manual Gender Overrides (`Auto` / `♀ Female` / `✕ Non-Female`):** Assign a gender manually to profiles that omit or obscure their gender via the toolbar dropdown on cards, profile header actions, or CRM records.
-  * Optional **Age Window** filter (default `30–45`) to dim or collapse cards outside your target age range.
-* **Zero-fetch passive profile & fetish caching**
-  * Reads profile content already rendered in the DOM while you browse normally—making **zero background network requests**.
-  * Extracts and merges **About** text, **Fetishes & Limits** (`Into` vs. `Limits`), **Writings / Lists**, age, gender, location, **Relationships**, **Looking for**, and **Groups Member Of** into a local cache for quick CRM review.
-* **Split `Into` vs. `Limits` matching & conflict alerts**
-  * Scans `excludeKeywords` only against positive profile sections (`header`, `About`, `Fetishes: Into`, and `Writings`) so a prospect listing a hard limit you also avoid (e.g., `no shibari`) will be highlighted before contact.
-  * Separately checks `Fetishes: Limits` against your positive category keywords and surfaces an amber **`⚠ Limit: [keyword]`** badge if a profile explicitly rules out an interest on your list.
+  * **Female only** is enabled by default. Confirmed non-female profiles can be dimmed or collapsed; profiles with unknown gender are not automatically rejected.
+  * **Manual Gender Overrides (`Auto` / `♀ Female` / `✕ Non-Female`):** Set a gender manually from card controls, the profile bar, or CRM records.
+  * Optional **Age Window** filtering uses adjustable minimum and maximum ages (defaults are 30 and 45; filtering is off by default).
+* **Passive profile caching**
+  * Reads profile information already rendered in the page while you browse; it does not make background fetch requests.
+  * Caches available About, Fetishes and Limits, Writings or Lists, age, gender, location, relationship, looking-for, and group information for local search and review.
+  * Cache retention is configurable. Expired entries can be pruned; profiles with a stage, manual gender classification, or non-empty note are retained by pruning.
+* **Into / Limits matching and conflict alerts**
+  * Searches positive profile text and cached text for your custom exclude keywords and highlight categories.
+  * Parses fetish entries into **Into / Curious** and **Limits** where the page structure allows it. A keyword matching a saved category and a profile's Limits is called out with an amber limit-conflict badge.
 * **Five-stage vetting pipeline**
-  * Tracks profiles across five color-coded stages:
-    * `★ Shortlist`
-    * `✉ Messaged`
-    * `💬 Talking`
-    * `☕ Met IRL`
-    * `✕ Pass`
-  * Automatically records a `Contacted YYYY-MM-DD` date when you advance someone into `Messaged`, `Talking`, or `Met IRL`, and flags profiles due for follow-up after 5+ days.
-* **Category-colored keyword matching & exclusions**
-  * Ships with 6 customizable color categories (*Family / Vee*, *Sensation / Play*, *Sober / Lifestyle*, *Neurotype / Style*, *Local / PDX*, and *Geek / Metal*) plus a `+ Add` / `Reset Defaults` editor in the HUD.
-  * Caps badges at **one per category type** (prioritizing visible card/post text over cached bio text) and displays multi-category indicator dots (`● ● ●`) on cards and CRM rows.
-* **Structured metadata & shared group highlights**
-  * Parses `Relationships`, `Looking for`, and `#profile-groups-member_of` lists, highlighting shared or notable local groups (e.g., `🤝 PDX Zero Proof Munch`) on CRM cards and inside chat contexts.
-* **Inbox & Chat Dock context strips with outreach templates**
-  * Injects a compact CRM strip into `/inbox`, `/conversations`, and FetLife's floating bottom-right chat dock displaying demographics, manual gender override, pipeline stage selector, category badges, and note status.
-  * Includes a **`Template ▾`** dropdown powered by customizable **Outreach Templates** in the HUD (with automatic `{username}` substitution) that inserts drafts directly into the message composer.
+  * Track profiles as `★ Shortlist`, `✉ Messaged`, `💬 Talking`, `☕ Met IRL`, or `✕ Pass`.
+  * Moving a profile into Messaged, Talking, or Met IRL automatically records a contact date unless one is already supplied.
+  * Inline controls let you change a stage, pass or restore a profile, and add a private note.
+* **Color-coded keyword categories and excludes**
+  * Includes six editable default highlight categories: *Family / Vee*, *Sensation / Play*, *Sober / Lifestyle*, *Neurotype / Style*, *Local / PDX*, and *Geek / Metal*.
+  * Add or remove categories, change their colors and keywords, and edit comma-separated exclude keywords in the HUD. Reset Defaults restores the built-in rules and excludes.
+  * Matching indicators and badges help show which categories or excluded terms matched visible or cached profile text.
+* **Inbox and Chat Dock context strips with outreach templates**
+  * Adds a CRM context strip to FetLife's inbox, conversations, and floating chat dock when a conversation partner can be identified. It can show cached match information, profile details, stage, notes, and relevant groups.
+  * Choose an outreach template from the strip to insert its text into the visible message composer. Templates support `{username}` substitution and can be edited in the HUD.
 * **Remappable keyboard triage**
-  * Step through visible search and member list cards with `J`/`K` (highlighted by a gold focus ring and floating status toast) and triage hands-free (`S` to Shortlist, `F` to cycle Gender, `X` to pass, `N` to note, `O` to open in a new tab).
-  * Every shortcut can be remapped, unbound (`Backspace`/`Delete`), or toggled off in the HUD's **Remappable Keybinds** panel, and single-key shortcuts automatically yield whenever you are typing in a form field.
+  * Navigate visible cards with `j` and `k`, then shortlist (`s`), toggle the focused card's minimal view (`m`), cycle its gender override (`f`), pass or restore it (`x`), edit its note (`n`), or open its profile in a background tab (`o`).
+  * Press `v` to cycle the global card view. Shortcuts can be remapped or unbound in the HUD. Single-key actions are suppressed while typing in editable fields.
 * **Searchable local CRM dashboard (`Alt+C`)**
-  * Opens an isolated modal dashboard to search across usernames, locations, groups, notes, cached About sections, and fetishes.
-  * Filter by pipeline stage, gender (`♀ Female Only`, `All Genders`, `Gender Unknown`, `Other / Non-Female`), relationship status (`Single / Available`, `Partnered / Married / Poly`, `Relationship Unknown`), and hide status.
-  * Sort by **Most Categories Matched**, **Pipeline Stage & Notes**, **Most Recent**, or **Username (A–Z)**.
-  * Includes tabbed cache previews (**About**, **Fetishes & Limits**, **Groups**, **Full Cache**), inline note editing, gender override toggles, stage switching, and single-user deletion.
-* **Smart cache pruning & JSON / Markdown exports**
-  * Displays live local storage usage (`KB`) in the HUD alongside **`Prune Expired`**, which deletes expired cache entries for untracked profiles while permanently preserving cached bios for anyone you have manually tagged or classified.
-  * Supports full **JSON** backup/restore as well as **`Export Markdown`** in the CRM modal to copy a formatted dossier of your filtered profiles.
+  * Search tracked profiles and cached text, and filter by stage, gender, relationship status, age, category, excluded terms, local PDX matches, and follow-up due status.
+  * Sort by matched categories, pipeline priority and notes, recency, or username.
+  * Review cached About, Fetishes and Limits, Groups, and full-cache text; edit notes, set gender overrides and stages, or delete a profile and its cache.
+  * Export filtered profiles as a Markdown dossier or export and restore the local database as JSON. Press `Esc` to close the modal.
 
 ## Safety and privacy
 
-* **100% local-first:** All settings, notes, pipeline stages, manual gender classifications, outreach templates, and cached profile data stay inside Violentmonkey storage (`GM_*`) and browser `localStorage`.
-* **Zero background requests:** The script never transmits data to any external server and never fires automated background `fetch()` requests—it only reads pages you open yourself while logged in to FetLife.
+* **Local-first:** Settings, notes, pipeline stages, gender overrides, templates, and cached profile data are stored in Violentmonkey storage and browser `localStorage`.
+* **No background fetching:** The script reads content already displayed in pages you visit and does not send profile data to an external server.
 
 ## Installation with Violentmonkey
 
-1. Install the **Violentmonkey** browser extension (Chrome/Chromium, Firefox, or Edge).
-2. Open the Violentmonkey dashboard and click **+** (Create a new script).
-3. Paste the full contents of `FetLife-CRM-Tool.js` into the editor and save (`Ctrl+S`).
-4. Confirm the `@grant` permissions (`GM_getValue`, `GM_setValue`, `GM_openInTab`) and ensure the script is enabled.
-5. Reload FetLife. The floating HUD pill will appear in the bottom-right corner clear of the chat dock.
+1. Install the **Violentmonkey** browser extension.
+2. Open the Violentmonkey dashboard and create a new userscript.
+3. Paste the contents of `FetLife-CRM-Tool.js` into the editor and save it.
+4. Ensure the script is enabled and allow its declared userscript grants: `GM_getValue`, `GM_setValue`, and `GM_openInTab`.
+5. Reload FetLife. The floating HUD should appear on FetLife pages.
 
 ## Controls & default shortcuts
 
 ### Floating HUD
-* **`FL (N) ▲`:** Shows how many user cards/posts were processed on the current page; click to expand settings (HUD corner position, card button style, card toolbar placement, sticky profile bar, dim/collapse mode, age filters, and default gender handling).
-* **`CRM`:** Opens the Local CRM dashboard (`Alt+C` by default; `Esc` to close).
-* **`Passed Filtered` / `Showing Passed`:** Toggles visibility of dimmed/collapsed profiles.
-* **`Active` / `Paused`:** Temporarily suspends page processing.
-* **`Cached: N`:** Displays how many profiles are stored in your local cache.
+
+* **`FL (N) ▲`:** Expands or collapses the settings panel; `N` is the number of cards processed on the current page.
+* **`CRM`:** Opens the Local CRM dashboard.
+* **`View: Full` (or current view):** Cycles the global card view among Full, Compact, and Minimal. The HUD setting also provides Off.
+* **`Passed Filtered` / `Showing Passed`:** Toggles visibility of passed profiles.
+* **`Active` / `Paused`:** Starts or pauses page processing.
+* **`Cached: N`:** Shows the number of profiles in the local cache.
 
 ### Default keyboard shortcuts (remappable in HUD)
 
 | Action | Default Key | Scope |
 | :--- | :--- | :--- |
 | Toggle CRM Modal | `Alt+C` | Anywhere on FetLife |
-| Next Card in List | `j` | Search / member / group lists |
-| Previous Card in List | `k` | Search / member / group lists |
-| Shortlist Focused Card | `s` | Focused card in list |
-| Cycle Gender (`♀`/`✕`/`Auto`) | `f` | Focused card in list |
-| Pass / Hide Focused Card | `x` | Focused card in list |
-| Edit Note on Card | `n` | Focused card in list |
-| Open Profile in Background Tab | `o` | Focused card in list |
+| Cycle Global Card View | `v` | Anywhere outside editable fields / CRM modal |
+| Next Card in List | `j` | Visible tracked cards |
+| Previous Card in List | `k` | Visible tracked cards |
+| Toggle Focused Card Minimal / Full | `m` | Focused tracked card |
+| Shortlist Focused Card | `s` | Focused tracked card |
+| Cycle Gender (`♀` / `✕` / `Auto`) | `f` | Focused tracked card |
+| Pass / Restore Focused Card | `x` | Focused tracked card |
+| Edit Note on Card | `n` | Focused tracked card |
+| Open Profile in Background Tab | `o` | Focused tracked card |
 
-### Userscript header metadata
+## Userscript header metadata
+
+The main script declares the following Violentmonkey metadata:
+
 ```javascript
 // @match        https://fetlife.com/*
 // @match        https://*.fetlife.com/*
