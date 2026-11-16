@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         FetLife Local Cache Filter & CRM
 // @namespace    local.fl.enhancer
-// @version      1.5.0
-// @description  Zero-fetch passive profile & fetish caching, female-only & age filtering, 5-stage vetting pipeline, Inbox/Chat Dock context strip, and searchable CRM modal
+// @version      1.6.0
+// @description  Zero-fetch passive profile & fetish caching, Into/Limits split, shared groups, chat templates, remappable keyboard triage, and searchable CRM modal
 // @match        https://fetlife.com/*
 // @match        https://*.fetlife.com/*
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_openInTab
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -14,7 +15,7 @@
   'use strict';
 
   // =========================================================================
-  // 1. PROFILE-TUNED DEFAULTS, PIPELINE STAGES & CONSTANTS
+  // 1. PROFILE-TUNED DEFAULTS, PIPELINE STAGES, TEMPLATES & KEYBINDS
   // =========================================================================
   const PIPELINE_STAGES = [
     { id: 'shortlist', label: 'Shortlisted', short: '★ Shortlist', icon: '★', color: '#fbbf24', bg: 'rgba(251, 191, 36, 0.16)', border: '#b45309' },
@@ -93,9 +94,50 @@
     '420', 'stoner'
   ];
 
+  const DEFAULT_MESSAGE_TEMPLATES = [
+    {
+      id: 'tpl_munch',
+      title: 'PDX Zero Proof Munch / Local Hello',
+      body: "Hey {username} — saw your profile and noticed we're both local to the PDX area. Michele and I regularly attend the PDX Zero Proof Munch if you ever want a low-stakes hello in a safe, alcohol-free public room, or happy to meet up at a quiet café for hot cocoa sometime. No pressure at all—just wanted to say hi."
+    },
+    {
+      id: 'tpl_writings',
+      title: 'About + Writings Pointer',
+      body: "Hi {username} — appreciated what you shared in your About section. If you're curious where my head is at, I put together two short pieces in my Writings ('I want a family, not a playmate' and 'Dad Mode') that lay out what I'm looking for plainly. Would love to hear your thoughts if any of it resonates."
+    },
+    {
+      id: 'tpl_coffee',
+      title: 'Direct Quiet Café / Cocoa Invite',
+      body: "Hey {username} — I'm straightforward and not big on noisy crowds, so figured I'd reach out directly. Would you be up for a low-pressure coffee or hot cocoa sometime to see if our gears mesh?"
+    }
+  ];
+
+  const DEFAULT_KEYBINDS = {
+    navEnabled: true,
+    toggleCrm: 'Alt+C',
+    nextCard: 'j',
+    prevCard: 'k',
+    shortlist: 's',
+    pass: 'x',
+    note: 'n',
+    openTab: 'o'
+  };
+
+  const KEYBIND_LABELS = [
+    { key: 'toggleCrm', label: 'Toggle CRM Modal' },
+    { key: 'nextCard',  label: 'Next Card in List' },
+    { key: 'prevCard',  label: 'Previous Card in List' },
+    { key: 'shortlist', label: 'Shortlist Focused Card' },
+    { key: 'pass',      label: 'Pass / Hide Focused Card' },
+    { key: 'note',      label: 'Edit Note on Card' },
+    { key: 'openTab',   label: 'Open Profile in New Tab' }
+  ];
+
   const DEFAULT_SETTINGS = {
     excludeKeywords: DEFAULT_EXCLUDE_KEYWORDS,
     highlightRules: DEFAULT_HIGHLIGHT_RULES,
+    messageTemplates: DEFAULT_MESSAGE_TEMPLATES,
+    keybinds: DEFAULT_KEYBINDS,
     hideMode: 'dim',             // 'dim' | 'collapse'
     dimOpacity: 0.18,            // 0.05 to 0.75
     showHidden: false,
@@ -127,16 +169,20 @@
     'collections', 'statuses', 'audios', 'profile', 'about'
   ]);
 
+  const LOCAL_PDX_TERMS = [
+    'portland', 'pdx', 'oregon', 'beaverton', 'hillsboro', 'lake oswego',
+    'tigard', 'milwaukie', 'gresham', 'vancouver', 'oregon city', 'west linn'
+  ];
+
   const USERNAME_RE = /^[a-zA-Z0-9_.-]{2,36}$/;
 
-  // Matches headline tokens like "34F", "34F Sensation Switch", "29MtF", "40NB", "31Trans Woman"
   const HEADLINE_DEMO_RE = /^([1-9]\d)\s*(Cis\s*Female|Cis\s*Woman|Trans\s*Woman|Trans\s*Female|Trans\s*Man|Trans\s*Male|Non-binary|Nonbinary|Genderfluid|Genderqueer|Crossdresser|Transvestite|Intersex|Agender|Female|Woman|Male|Man|MtF|FtM|NB|GF|GQ|IS|AG|TG|TS|CD|TV|M|F)(?:\s+([A-Za-z][A-Za-z /-]{1,32}))?$/i;
 
   const NON_FEMALE_GENDER_RE = /\b(m|male|cis\s*male|man|cis\s*man|nb|non-?binary|mtf|ftm|trans\s*woman|trans\s*female|trans\s*man|trans\s*male|transgender|transsexual|gf|genderfluid|gq|genderqueer|ag|agender|is|intersex|cd|crossdresser|tv|transvestite|two-?spirit|amab)\b/i;
   const FEMALE_GENDER_RE = /^(f|female|cis\s*f|cis\s*female|cisgender\s*female|woman|cis\s*woman|cisgender\s*woman)$/i;
 
   // =========================================================================
-  // 2. GENDER CLASSIFICATION & PERSISTENT LOCAL STORAGE
+  // 2. GENDER CLASSIFICATION, KEYBIND HELPERS & PERSISTENT STORAGE
   // =========================================================================
   function classifyGenderToken(rawToken, explicitRowText = '') {
     const combined = `${rawToken || ''} ${explicitRowText || ''}`.replace(/\s+/g, ' ').trim();
@@ -146,23 +192,12 @@
     const cleanRow = (explicitRowText || '').replace(/\s+/g, ' ').trim();
 
     if (NON_FEMALE_GENDER_RE.test(cleanToken) || NON_FEMALE_GENDER_RE.test(cleanRow)) {
-      return {
-        gender: cleanRow || cleanToken,
-        isFemale: false
-      };
+      return { gender: cleanRow || cleanToken, isFemale: false };
     }
-
     if (FEMALE_GENDER_RE.test(cleanToken) || FEMALE_GENDER_RE.test(cleanRow)) {
-      return {
-        gender: cleanRow || cleanToken.toUpperCase(),
-        isFemale: true
-      };
+      return { gender: cleanRow || cleanToken.toUpperCase(), isFemale: true };
     }
-
-    return {
-      gender: cleanRow || cleanToken || null,
-      isFemale: null
-    };
+    return { gender: cleanRow || cleanToken || null, isFemale: null };
   }
 
   function inferGenderFromStored(record, cachedBio) {
@@ -181,6 +216,65 @@
       return classifyGenderToken(record?.gender || cachedBio?.gender);
     }
     return { gender: null, isFemale: null };
+  }
+
+  function formatKeyComboFromEvent(e) {
+    const ignored = new Set(['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab']);
+    if (ignored.has(e.key)) return null;
+
+    const parts = [];
+    if (e.ctrlKey) parts.push('Ctrl');
+    if (e.altKey) parts.push('Alt');
+    if (e.shiftKey && (e.ctrlKey || e.altKey || e.metaKey || e.key.length > 1)) {
+      parts.push('Shift');
+    }
+    if (e.metaKey) parts.push('Meta');
+
+    let keyName = e.key;
+    if (keyName === ' ') keyName = 'Space';
+    else if (keyName.length === 1) {
+      keyName = parts.length > 0 ? keyName.toUpperCase() : keyName.toLowerCase();
+    }
+
+    parts.push(keyName);
+    return parts.join('+');
+  }
+
+  function matchesKeyCombo(e, configuredCombo) {
+    if (!configuredCombo) return false;
+    const actual = formatKeyComboFromEvent(e);
+    if (!actual) return false;
+    return actual.toLowerCase() === configuredCombo.trim().toLowerCase();
+  }
+
+  function isEditableTarget(e) {
+    const path = typeof e.composedPath === 'function' ? e.composedPath() : [e.target];
+    for (const el of path) {
+      if (!el || el.nodeType !== 1) continue;
+      const tag = el.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'LEXXY-EDITOR') return true;
+      if (el.isContentEditable) return true;
+    }
+    return false;
+  }
+
+  function openProfileInBackgroundTab(url) {
+    try {
+      if (typeof GM_openInTab === 'function') {
+        GM_openInTab(url, { active: false, insert: true });
+        return;
+      }
+    } catch (e) {
+      console.warn('[FLX] GM_openInTab fallback:', e);
+    }
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
+  function daysSinceIsoDate(isoDateStr) {
+    if (!isoDateStr) return null;
+    const ts = Date.parse(isoDateStr);
+    if (Number.isNaN(ts)) return null;
+    return Math.max(0, Math.floor((Date.now() - ts) / 86400000));
   }
 
   const Store = {
@@ -217,6 +311,7 @@
     getSettings() {
       const saved = this._read('fl_settings', {});
       const merged = Object.assign({}, DEFAULT_SETTINGS, saved);
+
       if (!Array.isArray(merged.highlightRules) || merged.highlightRules.length === 0) {
         merged.highlightRules = JSON.parse(JSON.stringify(DEFAULT_HIGHLIGHT_RULES));
       } else {
@@ -227,6 +322,12 @@
           }
         }
       }
+
+      if (!Array.isArray(merged.messageTemplates) || merged.messageTemplates.length === 0) {
+        merged.messageTemplates = JSON.parse(JSON.stringify(DEFAULT_MESSAGE_TEMPLATES));
+      }
+
+      merged.keybinds = Object.assign({}, DEFAULT_KEYBINDS, saved.keybinds || {});
       return merged;
     },
     saveSettings(patch) {
@@ -239,6 +340,25 @@
         highlightRules: JSON.parse(JSON.stringify(DEFAULT_HIGHLIGHT_RULES)),
         excludeKeywords: [...DEFAULT_EXCLUDE_KEYWORDS]
       });
+    },
+    resetTemplatesToDefaults() {
+      return this.saveSettings({
+        messageTemplates: JSON.parse(JSON.stringify(DEFAULT_MESSAGE_TEMPLATES))
+      });
+    },
+    resetKeybindsToDefaults() {
+      return this.saveSettings({
+        keybinds: Object.assign({}, DEFAULT_KEYBINDS)
+      });
+    },
+    getSelfGroups() {
+      const arr = this._read('fl_self_groups', []);
+      return Array.isArray(arr) ? arr : [];
+    },
+    setSelfGroups(groups) {
+      if (Array.isArray(groups) && groups.length > 0) {
+        this._write('fl_self_groups', groups);
+      }
     },
     getAllUsers() {
       return this._read('fl_users', {});
@@ -255,7 +375,10 @@
         gender: null,
         isFemale: null,
         genderRole: null,
-        location: null
+        location: null,
+        relationships: null,
+        lookingFor: null,
+        groups: []
       }, db[key] || {});
     },
     setUser(key, patch) {
@@ -291,12 +414,56 @@
     getBioCacheCount() {
       return Object.keys(this.getBioCache()).length;
     },
+    getStorageStats() {
+      const settingsStr = JSON.stringify(this.getSettings());
+      const usersStr = JSON.stringify(this.getAllUsers());
+      const cacheStr = JSON.stringify(this.getBioCache());
+      const totalBytes = settingsStr.length + usersStr.length + cacheStr.length;
+      return {
+        kb: (totalBytes / 1024).toFixed(1),
+        cacheCount: Object.keys(this.getBioCache()).length,
+        userCount: Object.keys(this.getAllUsers()).length
+      };
+    },
+    pruneExpiredCache() {
+      const settings = this.getSettings();
+      const maxAgeMs = Math.max(1, Number(settings.bioCacheTtlDays) || 14) * 86400000;
+      const now = Date.now();
+      const cache = this.getBioCache();
+      const users = this.getAllUsers();
+
+      let pruned = 0;
+      let retainedTracked = 0;
+
+      for (const [key, entry] of Object.entries(cache)) {
+        const isExpired = !entry || (now - (entry.fetchedAt || 0) > maxAgeMs);
+        if (!isExpired) continue;
+
+        const u = users[key];
+        const isTracked = Boolean(u && (u.status || (u.note && u.note.trim().length > 0)));
+        if (isTracked) {
+          retainedTracked++;
+        } else {
+          delete cache[key];
+          pruned++;
+        }
+      }
+
+      this._write('fl_bio_cache', cache);
+      return { pruned, retainedTracked };
+    },
     getCachedBio(key, ttlDays) {
       const cache = this.getBioCache();
       const entry = cache[key];
       if (!entry || typeof entry.text !== 'string') return null;
-      const maxAgeMs = Math.max(1, Number(ttlDays) || 14) * 86400000;
-      if (Date.now() - (entry.fetchedAt || 0) > maxAgeMs) return null;
+
+      // Always keep cached bio active if user has a pipeline stage or private note
+      const u = this.getUser(key);
+      const isTracked = Boolean(u.status || (u.note && u.note.trim().length > 0));
+      if (!isTracked) {
+        const maxAgeMs = Math.max(1, Number(ttlDays) || 14) * 86400000;
+        if (Date.now() - (entry.fetchedAt || 0) > maxAgeMs) return null;
+      }
       return entry;
     },
     mergeCachedProfile(key, incoming, username = null) {
@@ -304,9 +471,30 @@
       const prev = cache[key] || {};
       const prevSections = prev.sections || {};
 
+      const nextInto = (incoming.fetishesInto && incoming.fetishesInto.length > 0)
+        ? incoming.fetishesInto
+        : (prev.fetishesInto || []);
+      const nextLimits = (incoming.fetishesLimits && incoming.fetishesLimits.length > 0)
+        ? incoming.fetishesLimits
+        : (prev.fetishesLimits || []);
+
+      const nextGroups = (incoming.groups && incoming.groups.length > 0)
+        ? incoming.groups
+        : (prev.groups || []);
+
+      const intoText = nextInto.length > 0 ? `Into: ${nextInto.join(', ')}` : '';
+      const limitsText = nextLimits.length > 0 ? nextLimits.join(', ') : (prevSections.fetishesLimits || '');
+
+      // Fallback full fetish text only when structured Into/Limits lists weren't parsed separately
+      const unsplitFetishes = (nextInto.length === 0 && nextLimits.length === 0)
+        ? (incoming.fetishesText || prevSections.fetishes || '')
+        : '';
+
       const nextSections = {
         about: incoming.aboutText || prevSections.about || prev.aboutText || '',
         fetishes: incoming.fetishesText || prevSections.fetishes || '',
+        fetishesInto: intoText,
+        fetishesLimits: limitsText,
         writings: incoming.writingsText || prevSections.writings || '',
         header: incoming.headerText || prevSections.header || ''
       };
@@ -315,15 +503,17 @@
         ? (incoming.hasAbout || Boolean(nextSections.about))
         : Boolean(prev.hasAbout || nextSections.about);
 
-      const mergedParts = [
+      // Positive searchable text intentionally excludes fetishesLimits so hard limits don't trigger excludeKeywords
+      const positiveParts = [
         nextSections.header,
         nextSections.about,
-        nextSections.fetishes,
+        nextSections.fetishesInto,
+        unsplitFetishes,
         nextSections.writings,
-        incoming.fullText || prev.text || ''
+        incoming.nonFetishFullText || prev.text || ''
       ].filter(Boolean);
 
-      const combinedText = Array.from(new Set(mergedParts)).join(' \n ').slice(0, 24000);
+      const combinedPositiveText = Array.from(new Set(positiveParts)).join(' \n ').slice(0, 24000);
 
       const nextIsFemale = typeof incoming.isFemale === 'boolean'
         ? incoming.isFemale
@@ -331,38 +521,39 @@
 
       const nextEntry = {
         username: username || prev.username || null,
-        text: combinedText,
+        text: combinedPositiveText,
         aboutText: nextSections.about.slice(0, 8000),
         hasAbout,
-        fetishesInto: (incoming.fetishesInto && incoming.fetishesInto.length > 0)
-          ? incoming.fetishesInto
-          : (prev.fetishesInto || []),
-        fetishesLimits: (incoming.fetishesLimits && incoming.fetishesLimits.length > 0)
-          ? incoming.fetishesLimits
-          : (prev.fetishesLimits || []),
+        fetishesInto: nextInto,
+        fetishesLimits: nextLimits,
+        limitsText: limitsText.slice(0, 4000),
         sections: nextSections,
         age: incoming.age ?? prev.age ?? null,
         gender: incoming.gender || prev.gender || null,
         isFemale: nextIsFemale,
         genderRole: incoming.genderRole || prev.genderRole || null,
         location: incoming.location || prev.location || null,
+        relationships: incoming.relationships || prev.relationships || null,
+        lookingFor: incoming.lookingFor || prev.lookingFor || null,
+        groups: nextGroups,
         fetchedAt: Date.now()
       };
 
       cache[key] = nextEntry;
       this._write('fl_bio_cache', cache);
 
-      if (nextEntry.age || nextEntry.gender || typeof nextEntry.isFemale === 'boolean' || nextEntry.genderRole || nextEntry.location || username) {
-        const u = this.getUser(key);
-        this.setUser(key, {
-          username: username || u.username || null,
-          age: nextEntry.age ?? u.age ?? null,
-          gender: nextEntry.gender || u.gender || null,
-          isFemale: typeof nextEntry.isFemale === 'boolean' ? nextEntry.isFemale : u.isFemale,
-          genderRole: nextEntry.genderRole || u.genderRole || null,
-          location: nextEntry.location || u.location || null
-        });
-      }
+      const u = this.getUser(key);
+      this.setUser(key, {
+        username: username || u.username || null,
+        age: nextEntry.age ?? u.age ?? null,
+        gender: nextEntry.gender || u.gender || null,
+        isFemale: typeof nextEntry.isFemale === 'boolean' ? nextEntry.isFemale : u.isFemale,
+        genderRole: nextEntry.genderRole || u.genderRole || null,
+        location: nextEntry.location || u.location || null,
+        relationships: nextEntry.relationships || u.relationships || null,
+        lookingFor: nextEntry.lookingFor || u.lookingFor || null,
+        groups: nextGroups.length > 0 ? nextGroups : (u.groups || [])
+      });
 
       return nextEntry;
     },
@@ -373,7 +564,8 @@
       return JSON.stringify({
         settings: this.getSettings(),
         users: this.getAllUsers(),
-        bioCache: this.getBioCache()
+        bioCache: this.getBioCache(),
+        selfGroups: this.getSelfGroups()
       }, null, 2);
     },
     importAll(jsonText) {
@@ -381,11 +573,12 @@
       if (parsed.settings) this._write('fl_settings', Object.assign({}, DEFAULT_SETTINGS, parsed.settings));
       if (parsed.users) this._write('fl_users', parsed.users);
       if (parsed.bioCache) this._write('fl_bio_cache', parsed.bioCache);
+      if (Array.isArray(parsed.selfGroups)) this._write('fl_self_groups', parsed.selfGroups);
     }
   };
 
   // =========================================================================
-  // 3. COLOR, URL, DEMOGRAPHIC & FETLIFE DOM PARSERS (NO BRACKET SELECTORS)
+  // 3. COLOR, URL, DEMOGRAPHIC, GROUPS & FETLIFE DOM PARSERS (NO WILDCARDS)
   // =========================================================================
   function hexToRgba(hex, alpha) {
     const clean = (hex || '#38bdf8').replace('#', '').trim();
@@ -490,6 +683,8 @@
     let rawGenderToken = null;
     let genderRole = null;
     let explicitGenderRow = '';
+    let relationships = null;
+    let lookingFor = null;
     const locationParts = [];
 
     // 1. Extract location from /p/... links
@@ -505,14 +700,20 @@
       }
     }
 
-    // 2. Check for an explicit "Gender" metadata label row inside profile headers
+    // 2. Check structured metadata rows inside profile headers (Gender, Relationships, Looking for)
     const divs = container.getElementsByTagName('div');
     for (const d of divs) {
-      if (d.children.length === 0) {
+      if (d.children.length === 0 && d.nextElementSibling) {
         const label = (d.textContent || '').replace(/\s+/g, ' ').trim();
-        if (/^gender$/i.test(label) && d.nextElementSibling) {
-          explicitGenderRow = (d.nextElementSibling.textContent || '').replace(/\s+/g, ' ').trim();
-          break;
+        const val = (d.nextElementSibling.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!val) continue;
+
+        if (/^gender$/i.test(label)) {
+          explicitGenderRow = val;
+        } else if (/^relationships?$/i.test(label)) {
+          relationships = val;
+        } else if (/^looking\s+for$/i.test(label)) {
+          lookingFor = val;
         }
       }
     }
@@ -544,8 +745,54 @@
       gender: classified.gender,
       isFemale: classified.isFemale,
       genderRole,
-      location: locationParts.length > 0 ? locationParts.slice(0, 2).join(', ') : null
+      location: locationParts.length > 0 ? locationParts.slice(0, 2).join(', ') : null,
+      relationships,
+      lookingFor
     };
+  }
+
+  function parseProfileGroupsList() {
+    const groupsFrame = document.getElementById('profile-groups-member_of');
+    if (!groupsFrame) return [];
+    const groups = [];
+    const anchors = groupsFrame.getElementsByTagName('a');
+    for (const a of anchors) {
+      const href = a.getAttribute('href') || '';
+      if (!href.startsWith('/groups/')) continue;
+      // Extract only the primary group title text (skip child member/discussion count div)
+      let title = '';
+      for (const child of a.childNodes) {
+        if (child.nodeType === 3) {
+          title += child.nodeValue;
+        }
+      }
+      title = title.replace(/\s+/g, ' ').trim();
+      if (!title) {
+        const clone = a.cloneNode(true);
+        clone.querySelectorAll('div, span').forEach(n => n.remove());
+        title = (clone.textContent || '').replace(/\s+/g, ' ').trim();
+      }
+      if (title && !groups.includes(title)) {
+        groups.push(title);
+      }
+    }
+    return groups;
+  }
+
+  function getSharedOrNotableGroups(userGroups) {
+    if (!Array.isArray(userGroups) || userGroups.length === 0) return [];
+    const selfGroups = new Set(Store.getSelfGroups().map(g => g.toLowerCase()));
+    const matches = [];
+    for (const g of userGroups) {
+      const lower = g.toLowerCase();
+      if (lower === 'fetlife announcements') continue;
+      const inSelf = selfGroups.has(lower);
+      const isNotableLocal = /pdx|portland|zero proof|nerd|poly|co-?parent|vee|neurodivergent|autis/i.test(lower);
+      if (inSelf || isNotableLocal) {
+        matches.push(g);
+      }
+    }
+    return matches;
   }
 
   function detectCurrentProfilePage() {
@@ -712,7 +959,7 @@
   }
 
   // =========================================================================
-  // 4. PROFILE, ABOUT & FETISH SECTION PARSER (NO BRACKET SELECTORS)
+  // 4. PROFILE, ABOUT, GROUPS & FETISH SECTION PARSER (NO BRACKET SELECTORS)
   // =========================================================================
   function cleanSectionText(raw) {
     return (raw || '')
@@ -785,7 +1032,7 @@
     };
   }
 
-  function sanitizeProfileClone(rootEl) {
+  function sanitizeProfileClone(rootEl, stripFetishesFrame = false) {
     const clone = rootEl.cloneNode(true);
     const toRemove = [];
     const walker = document.createTreeWalker(clone, NodeFilter.SHOW_ELEMENT, null);
@@ -804,6 +1051,7 @@
         id === 'profile-navigation' ||
         id === 'flx-hud-host' ||
         id === 'flx-crm-host' ||
+        (stripFetishesFrame && id === 'profile-fetishes') ||
         cls.includes('flx-toolbar') ||
         cls.includes('flx-profile-bar') ||
         (node.dataset && (node.dataset.testId === 'profile-header-cover-actions' || 'popoverTemplate' in node.dataset))
@@ -819,7 +1067,7 @@
     const scope = document.getElementById('main-content') || document.body;
     if (!scope) {
       return {
-        fullText: '',
+        nonFetishFullText: '',
         aboutText: '',
         hasAbout: null,
         fetishesText: '',
@@ -831,20 +1079,25 @@
         gender: null,
         isFemale: null,
         genderRole: null,
-        location: null
+        location: null,
+        relationships: null,
+        lookingFor: null,
+        groups: []
       };
     }
 
     const profileHeader = findProfileHeaderElement();
     const demos = profileHeader
       ? parseDemographicsFromContainer(profileHeader)
-      : { age: null, gender: null, isFemale: null, genderRole: null, location: null };
+      : { age: null, gender: null, isFemale: null, genderRole: null, location: null, relationships: null, lookingFor: null };
 
     let headerText = '';
     if (profileHeader) {
-      const hClone = sanitizeProfileClone(profileHeader);
+      const hClone = sanitizeProfileClone(profileHeader, false);
       headerText = (hClone.textContent || '').replace(/\s+/g, ' ').trim();
     }
+
+    const groups = parseProfileGroupsList();
 
     let aboutText = '';
     let hasAbout = activeView === 'about' ? false : null;
@@ -888,15 +1141,16 @@
 
     let writingsText = '';
     if (activeView === 'posts' || activeView === 'writings' || activeView === 'l' || activeView === 'lists') {
-      const wClone = sanitizeProfileClone(scope);
+      const wClone = sanitizeProfileClone(scope, true);
       writingsText = (wClone.textContent || '').replace(/\s+/g, ' ').trim();
     }
 
-    const cleanScope = sanitizeProfileClone(scope);
-    const fullText = (cleanScope.textContent || '').replace(/\s+/g, ' ').trim();
+    // Strip #profile-fetishes from nonFetishFullText so Limits aren't mixed into positive/exclude scans
+    const cleanScope = sanitizeProfileClone(scope, true);
+    const nonFetishFullText = (cleanScope.textContent || '').replace(/\s+/g, ' ').trim();
 
     return {
-      fullText,
+      nonFetishFullText,
       aboutText,
       hasAbout,
       fetishesText: parsedFetishes.fetishesText,
@@ -908,12 +1162,15 @@
       gender: demos.gender,
       isFemale: demos.isFemale,
       genderRole: demos.genderRole,
-      location: demos.location
+      location: demos.location,
+      relationships: demos.relationships,
+      lookingFor: demos.lookingFor,
+      groups
     };
   }
 
   // =========================================================================
-  // 5. RULE MATCHING & DEMOGRAPHIC FILTERING
+  // 5. RULE MATCHING, LIMIT CONFLICTS & DEMOGRAPHIC FILTERING
   // =========================================================================
   function findSimpleMatches(text, keywords) {
     const lower = (text || '').toLowerCase();
@@ -930,9 +1187,9 @@
     return hits;
   }
 
-  function findRuleMatches(cardText, cachedBioText, rules) {
+  function findRuleMatches(cardText, cachedPositiveText, rules) {
     const lowerCard = (cardText || '').toLowerCase();
-    const lowerBio = (cachedBioText || '').toLowerCase();
+    const lowerBio = (cachedPositiveText || '').toLowerCase();
     const hits = [];
     const seenTypes = new Set();
 
@@ -978,6 +1235,33 @@
     return hits;
   }
 
+  // Checks if any positive highlight keyword appears in the user's Fetishes: Limits list
+  function findLimitConflicts(limitsList, rules) {
+    if (!Array.isArray(limitsList) || limitsList.length === 0) return [];
+    const lowerLimits = limitsList.join(' | ').toLowerCase();
+    const conflicts = [];
+    const seenTypes = new Set();
+
+    for (const rule of rules) {
+      if (!rule || !Array.isArray(rule.keywords)) continue;
+      const typeKey = (rule.id || rule.label || '').toLowerCase();
+      if (typeKey && seenTypes.has(typeKey)) continue;
+
+      for (const kw of rule.keywords) {
+        if (!kw || kw.length < 3) continue;
+        if (lowerLimits.includes(kw.toLowerCase())) {
+          if (typeKey) seenTypes.add(typeKey);
+          conflicts.push({
+            label: rule.label || 'Limit',
+            keyword: kw
+          });
+          break;
+        }
+      }
+    }
+    return conflicts;
+  }
+
   function isAgeOutOfRange(age, settings) {
     if (!settings.filterByAge || typeof age !== 'number') return false;
     const min = Number(settings.minAge) || 18;
@@ -988,6 +1272,12 @@
   function isGenderRejected(isFemale, settings) {
     if (!settings.filterFemaleOnly) return false;
     return isFemale === false;
+  }
+
+  function isLocalPdx(entryOrDemos) {
+    const loc = (entryOrDemos.location || '').toLowerCase();
+    const txt = (entryOrDemos.fullText || '').toLowerCase();
+    return LOCAL_PDX_TERMS.some(term => loc.includes(term) || txt.includes(term));
   }
 
   // =========================================================================
@@ -1083,7 +1373,9 @@
         gender: (demos && demos.gender) || cur.gender || null,
         isFemale: typeof demos?.isFemale === 'boolean' ? demos.isFemale : cur.isFemale,
         genderRole: (demos && demos.genderRole) || cur.genderRole || null,
-        location: (demos && demos.location) || cur.location || null
+        location: (demos && demos.location) || cur.location || null,
+        relationships: (demos && demos.relationships) || cur.relationships || null,
+        lookingFor: (demos && demos.lookingFor) || cur.lookingFor || null
       }, patch));
       onUpdate();
     };
@@ -1186,10 +1478,17 @@
     return bar;
   }
 
-  function appendMatchBadges(toolbar, cachedBio, demos, missingAbout, ageRejected, genderRejected, ruleHits, excludedHits, showFullMeta) {
+  function appendMatchBadges(toolbar, cachedBio, demos, missingAbout, ageRejected, genderRejected, ruleHits, limitConflicts, excludedHits, showFullMeta) {
     const demoPill = createDemographicPill(demos?.age, demos?.gender, demos?.genderRole, demos?.location);
     if (demoPill && showFullMeta) {
       toolbar.appendChild(demoPill);
+    }
+
+    if (demos?.relationships && showFullMeta) {
+      const relPill = document.createElement('span');
+      relPill.style.cssText = 'font-size:11px;color:#d8b4fe;background:rgba(168,85,247,0.12);border:1px solid rgba(168,85,247,0.28);padding:1px 6px;border-radius:4px;';
+      relPill.textContent = demos.relationships;
+      toolbar.appendChild(relPill);
     }
 
     const dotsCluster = createMatchDotsCluster(ruleHits);
@@ -1236,6 +1535,14 @@
       toolbar.appendChild(badge);
     });
 
+    limitConflicts.forEach((conf) => {
+      const badge = document.createElement('span');
+      badge.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:4px;background:rgba(245,158,11,0.18);color:#fcd34d;border:1px solid #d97706;font-weight:500;';
+      badge.title = `Listed under Fetishes: Limits (${conf.label})`;
+      badge.textContent = `⚠ Limit: ${conf.keyword}`;
+      toolbar.appendChild(badge);
+    });
+
     excludedHits.forEach((kw) => {
       const badge = document.createElement('span');
       badge.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
@@ -1245,7 +1552,136 @@
   }
 
   // =========================================================================
-  // 7. PAGE ENHANCERS: CARDS/POSTS, LIVE PROFILES & INBOX/CHAT DOCK STRIP
+  // 7. KEYBOARD LIST NAVIGATOR & FLOATING TOAST
+  // =========================================================================
+  const CardNavigator = {
+    activeIndex: -1,
+    toastEl: null,
+    toastTimer: null,
+
+    getVisibleCards() {
+      const all = Array.from(document.getElementsByClassName('flx-card-tracked'));
+      return all.filter(el => el.isConnected && el.offsetParent !== null && el.style.display !== 'none');
+    },
+
+    clearFocusRing() {
+      const prev = document.getElementsByClassName('flx-kbd-focused');
+      for (const el of Array.from(prev)) {
+        el.classList.remove('flx-kbd-focused');
+        el.style.boxShadow = el.dataset.flxPrevShadow || '';
+      }
+    },
+
+    focusCard(index) {
+      const cards = this.getVisibleCards();
+      if (cards.length === 0) {
+        this.showToast('No visible cards to navigate');
+        return null;
+      }
+      const clamped = ((index % cards.length) + cards.length) % cards.length;
+      this.activeIndex = clamped;
+
+      this.clearFocusRing();
+      const target = cards[clamped];
+      target.dataset.flxPrevShadow = target.style.boxShadow || '';
+      target.classList.add('flx-kbd-focused');
+      target.style.boxShadow = '0 0 0 2px #eab308, 0 8px 24px rgba(0,0,0,0.65)';
+      target.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+      const handle = target.dataset.flxHandle || target.dataset.flxUser || 'profile';
+      const kb = Store.getSettings().keybinds;
+      this.showToast(
+        `Card ${clamped + 1}/${cards.length}: /${handle}  •  [${kb.shortlist.toUpperCase()}] Shortlist  [${kb.pass.toUpperCase()}] Pass  [${kb.note.toUpperCase()}] Note  [${kb.openTab.toUpperCase()}] Open`
+      );
+      return target;
+    },
+
+    step(delta) {
+      const cards = this.getVisibleCards();
+      if (cards.length === 0) return;
+      if (this.activeIndex < 0 || this.activeIndex >= cards.length) {
+        this.focusCard(delta > 0 ? 0 : cards.length - 1);
+      } else {
+        this.focusCard(this.activeIndex + delta);
+      }
+    },
+
+    getFocusedCard() {
+      const cards = this.getVisibleCards();
+      if (cards.length === 0) return null;
+      if (this.activeIndex < 0 || this.activeIndex >= cards.length) {
+        return this.focusCard(0);
+      }
+      return cards[this.activeIndex];
+    },
+
+    actOnFocused(action) {
+      const card = this.getFocusedCard();
+      if (!card) return;
+      const userKey = card.dataset.flxUser;
+      const handle = card.dataset.flxHandle || userKey;
+      const url = card.dataset.flxProfileUrl || `${window.location.origin}/${handle}`;
+      if (!userKey) return;
+
+      if (action === 'openTab') {
+        openProfileInBackgroundTab(url);
+        this.showToast(`Opened /${handle} in background tab`);
+        return;
+      }
+
+      if (action === 'shortlist') {
+        const cur = Store.getUser(userKey);
+        const nextStatus = cur.status === 'shortlist' ? null : 'shortlist';
+        Store.setUser(userKey, { username: handle, status: nextStatus });
+        runAll();
+        this.focusCard(this.activeIndex);
+        this.showToast(nextStatus ? `★ Shortlisted /${handle}` : `Cleared stage on /${handle}`);
+        return;
+      }
+
+      if (action === 'pass') {
+        const cur = Store.getUser(userKey);
+        const nextStatus = cur.status === 'hidden' ? null : 'hidden';
+        Store.setUser(userKey, { username: handle, status: nextStatus });
+        runAll();
+        const remaining = this.getVisibleCards();
+        if (remaining.length > 0) {
+          this.focusCard(Math.min(this.activeIndex, remaining.length - 1));
+        }
+        this.showToast(nextStatus ? `✕ Passed /${handle}` : `Restored /${handle}`);
+        return;
+      }
+
+      if (action === 'note') {
+        const cur = Store.getUser(userKey);
+        const nextNote = window.prompt(`Private note for /${handle}:`, cur.note || '');
+        if (nextNote !== null) {
+          Store.setUser(userKey, { username: handle, note: nextNote.trim() });
+          runAll();
+          this.focusCard(this.activeIndex);
+          this.showToast(`✎ Saved note for /${handle}`);
+        }
+      }
+    },
+
+    showToast(text) {
+      if (!this.toastEl) {
+        this.toastEl = document.createElement('div');
+        this.toastEl.id = 'flx-kbd-toast';
+        this.toastEl.style.cssText = 'position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:2147483645;background:rgba(20,20,25,0.94);backdrop-filter:blur(8px);color:#f4f4f5;border:1px solid #3f3f48;border-radius:999px;padding:5px 14px;font-size:11px;font-family:system-ui,-apple-system,sans-serif;box-shadow:0 6px 20px rgba(0,0,0,0.65);pointer-events:none;transition:opacity 0.2s;';
+        document.body.appendChild(this.toastEl);
+      }
+      this.toastEl.textContent = text;
+      this.toastEl.style.opacity = '1';
+      clearTimeout(this.toastTimer);
+      this.toastTimer = setTimeout(() => {
+        if (this.toastEl) this.toastEl.style.opacity = '0';
+      }, 2800);
+    }
+  };
+
+  // =========================================================================
+  // 8. PAGE ENHANCERS: CARDS/POSTS, LIVE PROFILES & INBOX/CHAT DOCK STRIP
   // =========================================================================
   function applyContainerState(container, identity, settings, force = false) {
     const userKey = identity.key;
@@ -1261,7 +1697,9 @@
         ? identity.demographics.isFemale
         : inferredGender.isFemale,
       genderRole: identity.demographics?.genderRole || record.genderRole || cachedBio?.genderRole || null,
-      location: identity.demographics?.location || record.location || cachedBio?.location || null
+      location: identity.demographics?.location || record.location || cachedBio?.location || null,
+      relationships: identity.demographics?.relationships || record.relationships || cachedBio?.relationships || null,
+      lookingFor: identity.demographics?.lookingFor || record.lookingFor || cachedBio?.lookingFor || null
     };
 
     const missingAbout = Boolean(settings.hideNoAbout && cachedBio && cachedBio.hasAbout === false);
@@ -1271,10 +1709,11 @@
     const clone = container.cloneNode(true);
     clone.querySelectorAll('.flx-toolbar').forEach(el => el.remove());
     const itemText = clone.innerText || '';
-    const combinedText = bioText ? `${itemText}\n${bioText}` : itemText;
+    const combinedPositiveText = bioText ? `${itemText}\n${bioText}` : itemText;
 
-    const excludedHits = findSimpleMatches(combinedText, settings.excludeKeywords);
+    const excludedHits = findSimpleMatches(combinedPositiveText, settings.excludeKeywords);
     const ruleHits = findRuleMatches(itemText, bioText, settings.highlightRules);
+    const limitConflicts = cachedBio ? findLimitConflicts(cachedBio.fetishesLimits, settings.highlightRules) : [];
 
     const sig = JSON.stringify({
       userKey,
@@ -1296,12 +1735,16 @@
       cardToolbarMode: settings.cardToolbarMode,
       showNotesInline: settings.showNotesInline,
       excludedHits,
-      ruleHits
+      ruleHits,
+      limitConflicts
     });
 
     if (!force && container.dataset.flxSig === sig) return;
 
+    container.classList.add('flx-card-tracked');
     container.dataset.flxUser = userKey;
+    container.dataset.flxHandle = identity.username || record.username || userKey;
+    container.dataset.flxProfileUrl = identity.profileUrl;
     container.dataset.flxSig = sig;
 
     const isFilteredOut = record.status === 'hidden' || excludedHits.length > 0 || missingAbout || ageRejected || genderRejected;
@@ -1323,6 +1766,7 @@
         ageRejected,
         genderRejected,
         ruleHits,
+        limitConflicts,
         excludedHits,
         settings.cardToolbarMode === 'full'
       );
@@ -1363,6 +1807,7 @@
 
     const currentKey = profilePage.key;
     const displayHandle = profilePage.username || currentKey;
+    const { selfUsername } = getSelfIdentity();
 
     const today = new Date().toISOString().slice(0, 10);
     const existing = Store.getUser(currentKey);
@@ -1373,14 +1818,19 @@
       });
     }
 
-    const liveData = extractProfileData(document);
+    const liveData = extractProfileData(profilePage.activeView);
+    if (selfUsername && currentKey === selfUsername && liveData.groups.length > 0) {
+      Store.setSelfGroups(liveData.groups);
+    }
+
     let cachedBio = Store.getCachedBio(currentKey, Store.getSettings().bioCacheTtlDays);
 
     if (
-      liveData.fullText.length > 30 ||
+      liveData.nonFetishFullText.length > 30 ||
       liveData.hasAbout === true ||
       liveData.fetishesText.length > 0 ||
-      liveData.writingsText.length > 0
+      liveData.writingsText.length > 0 ||
+      liveData.groups.length > 0
     ) {
       cachedBio = Store.mergeCachedProfile(currentKey, liveData, profilePage.username);
     }
@@ -1398,6 +1848,7 @@
       aboutLen: cachedBio ? cachedBio.aboutText.length : 0,
       textLen: cachedBio ? cachedBio.text.length : 0,
       fetishLen: cachedBio ? (cachedBio.fetishesInto.length + cachedBio.fetishesLimits.length) : 0,
+      groupCount: cachedBio && cachedBio.groups ? cachedBio.groups.length : 0,
       status: latestUser.status,
       note: latestUser.note,
       lastContacted: latestUser.lastContacted,
@@ -1428,7 +1879,9 @@
         gender: u.gender || inferredGender.gender || null,
         isFemale: typeof u.isFemale === 'boolean' ? u.isFemale : inferredGender.isFemale,
         genderRole: u.genderRole || latestBio?.genderRole || null,
-        location: u.location || latestBio?.location || null
+        location: u.location || latestBio?.location || null,
+        relationships: u.relationships || latestBio?.relationships || null,
+        lookingFor: u.lookingFor || latestBio?.lookingFor || null
       };
 
       Array.from(document.getElementsByClassName('flx-profile-bar')).forEach(el => el.remove());
@@ -1447,11 +1900,12 @@
       const scanText = latestBio ? latestBio.text : '';
       const excludedHits = findSimpleMatches(scanText, settings.excludeKeywords);
       const ruleHits = findRuleMatches('', scanText, settings.highlightRules);
+      const limitConflicts = latestBio ? findLimitConflicts(latestBio.fetishesLimits, settings.highlightRules) : [];
       const missingAbout = Boolean(settings.hideNoAbout && latestBio && latestBio.hasAbout === false);
       const ageRejected = isAgeOutOfRange(demos.age, settings);
       const genderRejected = isGenderRejected(demos.isFemale, settings);
 
-      appendMatchBadges(toolbar, latestBio, demos, missingAbout, ageRejected, genderRejected, ruleHits, excludedHits, true);
+      appendMatchBadges(toolbar, latestBio, demos, missingAbout, ageRejected, genderRejected, ruleHits, limitConflicts, excludedHits, true);
 
       if (ruleHits.length > 0) {
         wrapper.style.borderColor = ruleHits[0].color;
@@ -1465,6 +1919,29 @@
 
     renderProfileBar();
     return profilePage;
+  }
+
+  function insertTextIntoComposer(rootEl, textToInsert) {
+    const textareas = rootEl.getElementsByTagName('textarea');
+    for (const ta of textareas) {
+      if (ta.offsetParent !== null) {
+        const prefix = ta.value && !ta.value.endsWith('\n') ? `${ta.value}\n` : ta.value;
+        ta.value = `${prefix}${textToInsert}`;
+        ta.focus();
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        ta.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      }
+    }
+    const editors = rootEl.getElementsByTagName('lexxy-editor');
+    for (const ed of editors) {
+      if (ed.offsetParent !== null) {
+        ed.focus();
+        document.execCommand('insertText', false, textToInsert);
+        return true;
+      }
+    }
+    return false;
   }
 
   function enhanceChatContext() {
@@ -1509,7 +1986,9 @@
 
       const scanText = cachedBio ? cachedBio.text : '';
       const ruleHits = findRuleMatches('', scanText, settings.highlightRules);
+      const limitConflicts = cachedBio ? findLimitConflicts(cachedBio.fetishesLimits, settings.highlightRules) : [];
       const excludedHits = findSimpleMatches(scanText, settings.excludeKeywords);
+      const sharedGroups = getSharedOrNotableGroups(cachedBio?.groups || record.groups || []);
 
       const sig = JSON.stringify({
         userKey,
@@ -1517,7 +1996,10 @@
         note: record.note,
         lastContacted: record.lastContacted,
         hasCache: Boolean(cachedBio),
+        templateCount: settings.messageTemplates.length,
+        sharedGroups,
         ruleHits,
+        limitConflicts,
         excludedHits
       });
 
@@ -1560,6 +2042,46 @@
       const dots = createMatchDotsCluster(ruleHits);
       if (dots) left.appendChild(dots);
 
+      // Outreach Template Selector
+      const tplSel = document.createElement('select');
+      tplSel.style.cssText = 'background:#222228;color:#d4d4d8;border:1px solid #3f3f46;border-radius:4px;padding:1px 5px;font-size:11px;cursor:pointer;max-width:145px;';
+      tplSel.title = 'Insert Outreach Template';
+      const tplDefault = document.createElement('option');
+      tplDefault.value = '';
+      tplDefault.textContent = 'Insert Template ▾';
+      tplSel.appendChild(tplDefault);
+      for (const tpl of settings.messageTemplates) {
+        const opt = document.createElement('option');
+        opt.value = tpl.id;
+        opt.textContent = tpl.title;
+        tplSel.appendChild(opt);
+      }
+
+      const feedbackBadge = document.createElement('span');
+      feedbackBadge.style.cssText = 'font-size:10px;color:#6ee7b7;display:none;';
+
+      tplSel.addEventListener('change', (e) => {
+        const chosenId = e.target.value;
+        tplSel.value = '';
+        if (!chosenId) return;
+        const tpl = settings.messageTemplates.find(t => t.id === chosenId);
+        if (!tpl) return;
+        const rendered = tpl.body.replace(/\{username\}/gi, displayHandle);
+        const inserted = insertTextIntoComposer(target.root, rendered);
+        if (inserted) {
+          feedbackBadge.textContent = '✓ Inserted';
+          feedbackBadge.style.display = 'inline';
+          setTimeout(() => { feedbackBadge.style.display = 'none'; }, 2000);
+        } else if (navigator.clipboard) {
+          navigator.clipboard.writeText(rendered).then(() => {
+            feedbackBadge.textContent = '✓ Copied';
+            feedbackBadge.style.display = 'inline';
+            setTimeout(() => { feedbackBadge.style.display = 'none'; }, 2000);
+          });
+        }
+      });
+
+      // Stage Selector
       const stageSel = document.createElement('select');
       const stObj = record.status ? STAGE_MAP[record.status] : null;
       stageSel.style.cssText = stObj
@@ -1595,18 +2117,30 @@
       });
 
       const right = document.createElement('div');
-      right.style.cssText = 'display:flex;align-items:center;gap:5px;';
-      right.append(stageSel, noteEditBtn);
+      right.style.cssText = 'display:flex;align-items:center;gap:5px;flex-wrap:wrap;';
+      right.append(feedbackBadge, tplSel, stageSel, noteEditBtn);
       topRow.append(left, right);
       strip.appendChild(topRow);
 
-      if (ruleHits.length > 0 || excludedHits.length > 0) {
+      if (ruleHits.length > 0 || limitConflicts.length > 0 || excludedHits.length > 0 || sharedGroups.length > 0) {
         const badgeRow = document.createElement('div');
         badgeRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;';
+        for (const g of sharedGroups.slice(0, 3)) {
+          const p = document.createElement('span');
+          p.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:3px;background:rgba(52,211,153,0.14);color:#6ee7b7;border:1px solid rgba(52,211,153,0.4);';
+          p.textContent = `🤝 ${g}`;
+          badgeRow.appendChild(p);
+        }
         for (const h of ruleHits) {
           const p = document.createElement('span');
           p.style.cssText = `font-size:10px;padding:1px 5px;border-radius:3px;background:${hexToRgba(h.color, 0.18)};color:${h.color};border:1px solid ${hexToRgba(h.color, 0.65)};`;
           p.textContent = `${h.label}: ${h.keyword}`;
+          badgeRow.appendChild(p);
+        }
+        for (const c of limitConflicts) {
+          const p = document.createElement('span');
+          p.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:3px;background:rgba(245,158,11,0.18);color:#fcd34d;border:1px solid #d97706;';
+          p.textContent = `⚠ Limit: ${c.keyword}`;
           badgeRow.appendChild(p);
         }
         for (const kw of excludedHits) {
@@ -1642,7 +2176,7 @@
   }
 
   // =========================================================================
-  // 8. LOCAL CRM DASHBOARD MODAL (SHADOW DOM ISOLATED)
+  // 9. LOCAL CRM DASHBOARD MODAL (SHADOW DOM ISOLATED)
   // =========================================================================
   const CrmModal = {
     host: null,
@@ -1651,10 +2185,15 @@
     filterStatus: 'all',
     filterCategory: 'all',
     filterGender: 'female', // 'female' | 'all' | 'unknown' | 'other'
+    filterRel: 'all',       // 'all' | 'single' | 'partnered' | 'unknown'
+    hideExcludes: false,
+    localOnly: false,
+    followUpOnly: false,
     sortBy: 'matches',
     searchQuery: '',
     minAgeFilter: '',
     maxAgeFilter: '',
+    lastRenderedEntries: [],
 
     buildEntries() {
       const settings = Store.getSettings();
@@ -1688,9 +2227,21 @@
         const isFemale = typeof u.isFemale === 'boolean' ? u.isFemale : inferredGender.isFemale;
         const genderRole = u.genderRole || c?.genderRole || null;
         const location = u.location || c?.location || null;
+        const relationships = u.relationships || c?.relationships || null;
+        const lookingFor = u.lookingFor || c?.lookingFor || null;
+        const groups = (c && Array.isArray(c.groups) && c.groups.length > 0) ? c.groups : (u.groups || []);
+        const sharedGroups = getSharedOrNotableGroups(groups);
 
         const ruleHits = findRuleMatches('', bioText, settings.highlightRules);
+        const limitConflicts = findLimitConflicts(fetishesLimits, settings.highlightRules);
         const excludedHits = findSimpleMatches(bioText, settings.excludeKeywords);
+
+        const daysSinceContact = daysSinceIsoDate(u.lastContacted);
+        const followUpDue = Boolean(
+          (u.status === 'messaged' || u.status === 'talking') &&
+          typeof daysSinceContact === 'number' &&
+          daysSinceContact >= 5
+        );
 
         const cachedDate = c && c.fetchedAt ? new Date(c.fetchedAt).toISOString().slice(0, 10) : null;
         const recentStamp = Math.max(
@@ -1707,6 +2258,8 @@
           note: u.note || '',
           lastSeen: u.lastSeen || null,
           lastContacted: u.lastContacted || null,
+          daysSinceContact,
+          followUpDue,
           cachedDate,
           recentStamp,
           age,
@@ -1714,6 +2267,11 @@
           isFemale,
           genderRole,
           location,
+          relationships,
+          lookingFor,
+          groups,
+          sharedGroups,
+          isLocal: isLocalPdx({ location, fullText: bioText }),
           hasCache,
           hasAbout,
           noAbout,
@@ -1724,6 +2282,7 @@
           fetishesLimits,
           fullText: bioText,
           ruleHits,
+          limitConflicts,
           excludedHits
         });
       }
@@ -1742,8 +2301,53 @@
         gender: null,
         isFemale: null,
         genderRole: null,
-        location: null
+        location: null,
+        relationships: null,
+        lookingFor: null,
+        groups: []
       }, raw || {});
+    },
+
+    generateMarkdownDossier(entries) {
+      const today = new Date().toISOString().slice(0, 10);
+      const lines = [
+        `# FetLife Local CRM Dossier (${today})`,
+        `Exported ${entries.length} profiles matching active filters.\n`
+      ];
+
+      for (const e of entries) {
+        const stageLabel = e.status && STAGE_MAP[e.status] ? STAGE_MAP[e.status].label : 'Unstaged';
+        const meta = [
+          e.genderRole || (e.age ? `${e.age}${e.gender || ''}` : e.gender),
+          e.location,
+          e.relationships,
+          e.lookingFor ? `Looking for: ${e.lookingFor}` : ''
+        ].filter(Boolean).join(' • ');
+
+        lines.push(`## [/${e.displayHandle}](${e.profileUrl}) — ${stageLabel}`);
+        if (meta) lines.push(`* **Profile:** ${meta}`);
+        if (e.lastContacted) lines.push(`* **Last Contacted:** ${e.lastContacted} (${e.daysSinceContact}d ago)`);
+        else if (e.lastSeen) lines.push(`* **Last Viewed:** ${e.lastSeen}`);
+        if (e.ruleHits.length > 0) {
+          lines.push(`* **Matches:** ${e.ruleHits.map(h => `${h.label} (${h.keyword})`).join(', ')}`);
+        }
+        if (e.limitConflicts.length > 0) {
+          lines.push(`* **Limit Conflicts:** ${e.limitConflicts.map(c => c.keyword).join(', ')}`);
+        }
+        if (e.sharedGroups.length > 0) {
+          lines.push(`* **Shared/Local Groups:** ${e.sharedGroups.join(', ')}`);
+        }
+        if (e.note) {
+          lines.push(`> **Note:** ${e.note.replace(/\n/g, '\n> ')}`);
+        }
+        if (e.aboutText) {
+          const snippet = e.aboutText.slice(0, 320).replace(/\n+/g, ' ');
+          lines.push(`\n${snippet}${e.aboutText.length > 320 ? '…' : ''}`);
+        }
+        lines.push('\n---\n');
+      }
+
+      return lines.join('\n');
     },
 
     open() {
@@ -1797,40 +2401,42 @@
             }
             .modal {
               background: #141418; border: 1px solid #303038; border-radius: 12px;
-              width: min(1040px, 96vw); height: min(88vh, 900px);
+              width: min(1080px, 96vw); height: min(89vh, 920px);
               display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.9);
               overflow: hidden;
             }
             .header {
-              padding: 14px 18px; background: linear-gradient(180deg, #1c1c22 0%, #16161b 100%);
+              padding: 13px 18px; background: linear-gradient(180deg, #1c1c22 0%, #16161b 100%);
               border-bottom: 1px solid #2b2b33;
-              display: flex; align-items: center; justify-content: space-between; gap: 12px;
+              display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
             }
             .title-wrap { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
             .title { font-size: 16px; font-weight: 700; color: #fafafa; letter-spacing: -0.01em; }
             .subtitle { font-size: 12px; color: #a1a1aa; }
             .controls {
-              padding: 12px 18px; background: #18181d; border-bottom: 1px solid #282830;
-              display: flex; flex-direction: column; gap: 9px;
+              padding: 11px 18px; background: #18181d; border-bottom: 1px solid #282830;
+              display: flex; flex-direction: column; gap: 8px;
             }
-            .control-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+            .control-row { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
             input[type="text"], input[type="number"], select, textarea {
               background: #202026; color: #f4f4f5; border: 1px solid #3a3a44; border-radius: 6px;
-              padding: 6px 10px; font-size: 12px; font-family: inherit;
+              padding: 5px 9px; font-size: 12px; font-family: inherit;
             }
             input[type="text"]:focus, input[type="number"]:focus, select:focus, textarea:focus {
               outline: none; border-color: #eab308;
             }
             .search-input { flex: 1; min-width: 200px; }
-            .age-input { width: 76px; }
-            .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+            .age-input { width: 72px; }
+            .tabs { display: flex; gap: 5px; flex-wrap: wrap; }
             button {
               background: #222228; color: #d4d4d8; border: 1px solid #3a3a44; border-radius: 6px;
-              padding: 5px 10px; cursor: pointer; font-size: 12px; font-family: inherit;
+              padding: 5px 9px; cursor: pointer; font-size: 12px; font-family: inherit;
               transition: background 0.15s, border-color 0.15s, color 0.15s;
             }
             button:hover { background: #2d2d35; color: #fff; }
             button.active-tab { background: rgba(234, 179, 8, 0.16); border-color: #ca8a04; color: #fde047; font-weight: 600; }
+            button.toggle-pill { font-size: 11px; padding: 4px 8px; }
+            button.toggle-pill.on { background: rgba(56, 189, 248, 0.16); border-color: #0284c7; color: #7dd3fc; font-weight: 600; }
             button.danger-ghost { color: #fca5a5; border-color: #4c1d1d; }
             button.danger-ghost:hover { background: #3f1515; }
             .list {
@@ -1842,7 +2448,7 @@
             }
             .card {
               background: #1a1a20; border: 1px solid #2d2d36; border-radius: 10px;
-              padding: 13px 15px; display: flex; flex-direction: column; gap: 10px;
+              padding: 13px 15px; display: flex; flex-direction: column; gap: 9px;
               box-shadow: 0 2px 10px rgba(0,0,0,0.25);
             }
             .card-top {
@@ -1853,12 +2459,14 @@
               color: #93c5fd; font-weight: 700; font-size: 15px; text-decoration: none;
             }
             .user-link:hover { text-decoration: underline; color: #bfdbfe; }
-            .badges { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+            .badges { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
             .pill {
               font-size: 11px; padding: 2px 7px; border-radius: 5px;
               background: #24242b; color: #a1a1aa; border: 1px solid #363640;
             }
             .pill-ex { background: rgba(239,68,68,0.16); color: #fca5a5; border-color: #b91c1c; }
+            .pill-warn { background: rgba(245,158,11,0.18); color: #fcd34d; border-color: #d97706; }
+            .pill-group { background: rgba(52,211,153,0.12); color: #6ee7b7; border-color: rgba(52,211,153,0.35); }
             .stage-bar { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
             .stage-btn { padding: 3px 8px; font-size: 11px; border-radius: 5px; }
             .note-row { display: flex; gap: 8px; align-items: flex-start; }
@@ -1893,25 +2501,35 @@
                   <span class="subtitle" id="crm-summary"></span>
                 </div>
                 <div class="stage-bar">
-                  <button type="button" id="crm-export">Export JSON</button>
+                  <button type="button" id="crm-export-md" title="Copy formatted Markdown summary of filtered entries">Export Markdown</button>
+                  <button type="button" id="crm-export" title="Copy raw JSON backup">Export JSON</button>
                   <button type="button" id="crm-close">✕ Close (Esc)</button>
                 </div>
               </div>
               <div class="controls">
                 <div class="control-row">
-                  <input type="text" class="search-input" id="crm-search" placeholder="Search username, location, notes, cached About, or fetishes...">
+                  <input type="text" class="search-input" id="crm-search" placeholder="Search handle, location, groups, notes, About, or fetishes...">
                   <select id="crm-gender-filter" title="Filter by Gender">
                     <option value="female">♀ Female Only</option>
                     <option value="all">All Genders</option>
                     <option value="unknown">Gender Unknown</option>
                     <option value="other">Other / Non-Female</option>
                   </select>
+                  <select id="crm-rel-filter" title="Filter by Relationship Status">
+                    <option value="all">All Relationships</option>
+                    <option value="single">Single / Available</option>
+                    <option value="partnered">Partnered / Married / Poly</option>
+                    <option value="unknown">Relationship Unknown</option>
+                  </select>
                   <input type="number" class="age-input" id="crm-age-min" min="18" max="99" placeholder="Min age" title="Minimum Age">
                   <input type="number" class="age-input" id="crm-age-max" min="18" max="99" placeholder="Max age" title="Maximum Age">
+                </div>
+                <div class="control-row">
                   <select id="crm-cat-filter" title="Filter by Content Category">
                     <option value="all">All Categories</option>
                     ${settings.highlightRules.map(r => `<option value="rule:${r.id || r.label}">${r.label}</option>`).join('')}
                     <option value="excluded">Has Exclude Match</option>
+                    <option value="conflict">Has Limit Conflict</option>
                   </select>
                   <select id="crm-sort" title="Sort order">
                     <option value="matches">Sort: Most Categories Matched</option>
@@ -1919,6 +2537,9 @@
                     <option value="recent">Sort: Most Recent</option>
                     <option value="alpha">Sort: Username (A–Z)</option>
                   </select>
+                  <button type="button" class="toggle-pill" id="crm-tgl-excludes">🚫 Hide Excludes</button>
+                  <button type="button" class="toggle-pill" id="crm-tgl-local">📍 Local PDX Only</button>
+                  <button type="button" class="toggle-pill" id="crm-tgl-followup">⏰ Follow-Up Due</button>
                 </div>
                 <div class="tabs" id="crm-tabs"></div>
               </div>
@@ -1930,22 +2551,35 @@
         const $ = (id) => this.shadow.getElementById(id);
         const searchInput = $('crm-search');
         const genderSelect = $('crm-gender-filter');
+        const relSelect = $('crm-rel-filter');
         const minAgeInput = $('crm-age-min');
         const maxAgeInput = $('crm-age-max');
         const catSelect = $('crm-cat-filter');
         const sortSelect = $('crm-sort');
+        const btnExcludes = $('crm-tgl-excludes');
+        const btnLocal = $('crm-tgl-local');
+        const btnFollowUp = $('crm-tgl-followup');
 
         searchInput.value = this.searchQuery;
         genderSelect.value = this.filterGender;
+        relSelect.value = this.filterRel;
         minAgeInput.value = this.minAgeFilter;
         maxAgeInput.value = this.maxAgeFilter;
         catSelect.value = this.filterCategory;
         sortSelect.value = this.sortBy;
 
+        const syncToggleButtons = () => {
+          btnExcludes.classList.toggle('on', this.hideExcludes);
+          btnLocal.classList.toggle('on', this.localOnly);
+          btnFollowUp.classList.toggle('on', this.followUpOnly);
+        };
+        syncToggleButtons();
+
         $('crm-backdrop').addEventListener('click', (e) => {
           if (e.target === $('crm-backdrop')) this.close();
         });
         $('crm-close').addEventListener('click', () => this.close());
+
         $('crm-export').addEventListener('click', () => {
           const dump = Store.exportAll();
           if (navigator.clipboard) {
@@ -1957,12 +2591,27 @@
           }
         });
 
+        $('crm-export-md').addEventListener('click', () => {
+          const md = this.generateMarkdownDossier(this.lastRenderedEntries);
+          if (navigator.clipboard) {
+            navigator.clipboard.writeText(md).then(() => {
+              $('crm-summary').textContent = `✓ Copied Markdown dossier (${this.lastRenderedEntries.length} profiles) to clipboard`;
+            }).catch(() => window.prompt('Copy Markdown dossier:', md));
+          } else {
+            window.prompt('Copy Markdown dossier:', md);
+          }
+        });
+
         searchInput.addEventListener('input', (e) => {
           this.searchQuery = e.target.value;
           this.refreshList();
         });
         genderSelect.addEventListener('change', (e) => {
           this.filterGender = e.target.value;
+          this.refreshList();
+        });
+        relSelect.addEventListener('change', (e) => {
+          this.filterRel = e.target.value;
           this.refreshList();
         });
         minAgeInput.addEventListener('input', (e) => {
@@ -1979,6 +2628,22 @@
         });
         sortSelect.addEventListener('change', (e) => {
           this.sortBy = e.target.value;
+          this.refreshList();
+        });
+
+        btnExcludes.addEventListener('click', () => {
+          this.hideExcludes = !this.hideExcludes;
+          syncToggleButtons();
+          this.refreshList();
+        });
+        btnLocal.addEventListener('click', () => {
+          this.localOnly = !this.localOnly;
+          syncToggleButtons();
+          this.refreshList();
+        });
+        btnFollowUp.addEventListener('click', () => {
+          this.followUpOnly = !this.followUpOnly;
+          syncToggleButtons();
           this.refreshList();
         });
 
@@ -2051,11 +2716,24 @@
         if (this.filterGender === 'unknown' && entry.isFemale !== null) return false;
         if (this.filterGender === 'other' && entry.isFemale !== false) return false;
 
+        if (this.filterRel === 'single') {
+          if (!entry.relationships || !/single|solo|unpartnered|available/i.test(entry.relationships)) return false;
+        } else if (this.filterRel === 'partnered') {
+          if (!entry.relationships || /single|solo|unpartnered|available/i.test(entry.relationships)) return false;
+        } else if (this.filterRel === 'unknown') {
+          if (entry.relationships) return false;
+        }
+
         if (minA !== null && typeof entry.age === 'number' && entry.age < minA) return false;
         if (maxA !== null && typeof entry.age === 'number' && entry.age > maxA) return false;
         if ((minA !== null || maxA !== null) && typeof entry.age !== 'number') return false;
 
+        if (this.hideExcludes && entry.excludedHits.length > 0) return false;
+        if (this.localOnly && !entry.isLocal) return false;
+        if (this.followUpOnly && !entry.followUpDue) return false;
+
         if (this.filterCategory === 'excluded' && entry.excludedHits.length === 0) return false;
+        if (this.filterCategory === 'conflict' && entry.limitConflicts.length === 0) return false;
         if (this.filterCategory.startsWith('rule:')) {
           const targetId = this.filterCategory.slice(5);
           if (!entry.ruleHits.some(h => String(h.id) === targetId)) return false;
@@ -2068,6 +2746,9 @@
             entry.gender || '',
             entry.genderRole || '',
             entry.location || '',
+            entry.relationships || '',
+            entry.lookingFor || '',
+            entry.groups.join(' '),
             entry.note,
             entry.aboutText,
             entry.fetishesText,
@@ -2111,6 +2792,7 @@
         return a.displayHandle.localeCompare(b.displayHandle);
       });
 
+      this.lastRenderedEntries = filtered;
       $('crm-summary').textContent = `Showing ${filtered.length} of ${allEntries.length} tracked profiles`;
 
       const listEl = $('crm-list');
@@ -2160,12 +2842,23 @@
         const badges = document.createElement('div');
         badges.className = 'badges';
 
+        if (entry.relationships) {
+          const b = document.createElement('span');
+          b.className = 'pill';
+          b.style.color = '#d8b4fe';
+          b.style.borderColor = 'rgba(168,85,247,0.35)';
+          b.textContent = entry.relationships;
+          badges.appendChild(b);
+        }
+
         if (entry.lastContacted) {
           const b = document.createElement('span');
           b.className = 'pill';
-          b.style.color = '#7dd3fc';
-          b.style.borderColor = '#0369a1';
-          b.textContent = `Contacted ${entry.lastContacted}`;
+          b.style.color = entry.followUpDue ? '#fde047' : '#7dd3fc';
+          b.style.borderColor = entry.followUpDue ? '#ca8a04' : '#0369a1';
+          b.textContent = entry.followUpDue
+            ? `⏰ Contacted ${entry.lastContacted} (${entry.daysSinceContact}d ago)`
+            : `Contacted ${entry.lastContacted}`;
           badges.appendChild(b);
         } else if (entry.lastSeen) {
           const b = document.createElement('span');
@@ -2185,10 +2878,24 @@
           badges.appendChild(b);
         }
 
+        for (const g of entry.sharedGroups.slice(0, 3)) {
+          const b = document.createElement('span');
+          b.className = 'pill pill-group';
+          b.textContent = `🤝 ${g}`;
+          badges.appendChild(b);
+        }
+
         for (const hit of entry.ruleHits) {
           const b = document.createElement('span');
           b.style.cssText = `font-size:11px;padding:2px 6px;border-radius:4px;background:${hexToRgba(hit.color, 0.18)};color:${hit.color};border:1px solid ${hexToRgba(hit.color, 0.65)};font-weight:500;`;
           b.textContent = `${hit.label}: ${hit.keyword}`;
+          badges.appendChild(b);
+        }
+
+        for (const c of entry.limitConflicts) {
+          const b = document.createElement('span');
+          b.className = 'pill pill-warn';
+          b.textContent = `⚠ Limit: ${c.keyword}`;
           badges.appendChild(b);
         }
 
@@ -2239,6 +2946,13 @@
 
         top.append(leftInfo, stageBar);
         card.appendChild(top);
+
+        if (entry.lookingFor) {
+          const lfLine = document.createElement('div');
+          lfLine.style.cssText = 'font-size:11px;color:#9ca3af;';
+          lfLine.textContent = `Looking for: ${entry.lookingFor}`;
+          card.appendChild(lfLine);
+        }
 
         const noteRow = document.createElement('div');
         noteRow.className = 'note-row';
@@ -2328,6 +3042,10 @@
               if (entry.fetishesInto.length === 0 && entry.fetishesLimits.length === 0) {
                 bodyBox.textContent = entry.fetishesText || 'No structured fetishes cached yet.';
               }
+            } else if (activeSub === 'groups') {
+              bodyBox.textContent = entry.groups.length > 0
+                ? entry.groups.join('  •  ')
+                : 'No groups cached for this profile.';
             } else {
               bodyBox.textContent = entry.fullText;
             }
@@ -2336,6 +3054,7 @@
           const tabOptions = [
             { id: 'about', label: 'About' },
             ...(entry.hasFetishes ? [{ id: 'fetishes', label: 'Fetishes & Limits' }] : []),
+            ...(entry.groups.length > 0 ? [{ id: 'groups', label: `Groups (${entry.groups.length})` }] : []),
             { id: 'full', label: 'Full Cache' }
           ];
 
@@ -2367,7 +3086,7 @@
   };
 
   // =========================================================================
-  // 9. SHADOW DOM FLOATING HUD
+  // 10. SHADOW DOM FLOATING HUD (WITH KEYBIND REMAPPER, TEMPLATES & PRUNING)
   // =========================================================================
   const Hud = {
     shadow: null,
@@ -2378,6 +3097,8 @@
     showHiddenBtn: null,
     pauseBtn: null,
     panel: null,
+    draftKeybinds: null,
+    capturingKeyAction: null,
 
     applyPosition(pos) {
       if (!this.host) return;
@@ -2402,6 +3123,7 @@
       if (document.getElementById('flx-hud-host')) return;
 
       const settings = Store.getSettings();
+      this.draftKeybinds = Object.assign({}, settings.keybinds);
       this.host = document.createElement('div');
       this.host.id = 'flx-hud-host';
       this.host.style.cssText = 'position:fixed;z-index:2147483646;';
@@ -2412,29 +3134,37 @@
         <style>
           :host { all: initial; font-family: system-ui, -apple-system, sans-serif; font-size: 12px; color: #e4e4e7; }
           * { box-sizing: border-box; }
+          ::-webkit-scrollbar { width: 6px; }
+          ::-webkit-scrollbar-track { background: #141418; }
+          ::-webkit-scrollbar-thumb { background: #33333b; border-radius: 999px; }
           .box {
             background: rgba(20, 20, 24, 0.96); backdrop-filter: blur(10px);
             border: 1px solid #383842; border-radius: 10px; padding: 8px 10px;
-            box-shadow: 0 8px 28px rgba(0,0,0,0.75); width: 410px; max-height: 85vh; overflow-y: auto;
+            box-shadow: 0 8px 28px rgba(0,0,0,0.75); width: 430px; max-height: 85vh; overflow-y: auto;
           }
           .box.collapsed { width: auto; overflow: visible; }
           .row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
           button {
             background: #232329; color: #e4e4e7; border: 1px solid #3f3f48; border-radius: 5px;
-            padding: 4px 8px; cursor: pointer; font-size: 11px; transition: background 0.15s;
+            padding: 4px 8px; cursor: pointer; font-size: 11px; transition: background 0.15s, border-color 0.15s;
           }
           button:hover { background: #303038; color: #fff; }
           button.star { background: rgba(234, 179, 8, 0.18); border-color: #ca8a04; color: #fde047; font-weight: 600; }
           button.danger { background: rgba(239, 68, 68, 0.18); border-color: #dc2626; color: #fca5a5; }
+          button.capturing { background: rgba(56, 189, 248, 0.22); border-color: #0284c7; color: #7dd3fc; font-weight: 600; }
           .scan-pill {
             font-size: 11px; color: #a1a1aa; padding: 2px 7px; background: #1c1c22;
             border: 1px solid #303038; border-radius: 5px; max-width: 195px;
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
           }
-          .panel { margin-top: 8px; padding-top: 8px; border-top: 1px solid #2c2c34; display: flex; flex-direction: column; gap: 8px; }
+          .panel { margin-top: 8px; padding-top: 8px; border-top: 1px solid #2c2c34; display: flex; flex-direction: column; gap: 9px; }
+          .section-box {
+            background: #17171c; border: 1px solid #2b2b34; border-radius: 7px;
+            padding: 7px 9px; display: flex; flex-direction: column; gap: 6px;
+          }
           label { display: flex; flex-direction: column; gap: 3px; color: #a1a1aa; font-size: 11px; }
           .inline-label { flex-direction: row; align-items: center; gap: 6px; cursor: pointer; color: #d4d4d8; }
-          input[type="text"], input[type="number"], select {
+          input[type="text"], input[type="number"], select, textarea {
             background: #1d1d23; color: #f4f4f5; border: 1px solid #3e3e48; border-radius: 5px;
             padding: 4px 6px; font-size: 11px; font-family: inherit; width: 100%;
           }
@@ -2444,76 +3174,81 @@
           }
           .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
           .grid3 { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 6px; align-items: end; }
-          .rules-header { display: flex; justify-content: space-between; align-items: center; color: #a1a1aa; font-size: 11px; gap: 6px; }
+          .rules-header { display: flex; justify-content: space-between; align-items: center; color: #d4d4d8; font-weight: 600; font-size: 11px; gap: 6px; }
           .rule-row { display: flex; align-items: center; gap: 4px; margin-top: 4px; }
           .rule-label { width: 96px !important; flex-shrink: 0; }
           .rule-kws { flex: 1; }
           .rule-del { padding: 3px 6px; color: #fca5a5; flex-shrink: 0; }
+          .tpl-card { background: #131317; border: 1px solid #2a2a33; border-radius: 5px; padding: 5px 6px; display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+          .kb-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: #cbd5e1; padding: 2px 0; }
+          .kb-btn { min-width: 96px; text-align: center; font-family: ui-monospace, monospace; }
           .status { color: #6ee7b7; font-size: 11px; min-height: 14px; }
         </style>
         <div class="box collapsed" id="hud-box">
           <div class="row">
             <button type="button" id="btn-toggle">FL (<span id="card-count">0</span>) ▲</button>
-            <button type="button" class="star" id="btn-crm" title="Open Local CRM Dashboard (Alt+C)">CRM</button>
+            <button type="button" class="star" id="btn-crm">CRM</button>
             <button type="button" id="btn-hidden"></button>
             <button type="button" id="btn-pause"></button>
             <span class="scan-pill" id="cache-status">Cached: 0</span>
           </div>
           <div class="panel" id="hud-panel" style="display:none;">
-            <div class="grid2">
-              <label>HUD Position
-                <select id="in-pos">
-                  <option value="bottom-right">Bottom Right</option>
-                  <option value="bottom-left">Bottom Left</option>
-                  <option value="top-right">Top Right</option>
-                </select>
+            <div class="section-box">
+              <div class="grid2">
+                <label>HUD Position
+                  <select id="in-pos">
+                    <option value="bottom-right">Bottom Right</option>
+                    <option value="bottom-left">Bottom Left</option>
+                    <option value="top-right">Top Right</option>
+                  </select>
+                </label>
+                <label>Card Buttons
+                  <select id="in-toolbar">
+                    <option value="full">Full Labels</option>
+                    <option value="compact">Compact Icons</option>
+                    <option value="off">Hidden on Cards</option>
+                  </select>
+                </label>
+              </div>
+              <div class="grid2">
+                <label>Filter Action
+                  <select id="in-mode">
+                    <option value="dim">Dim Card</option>
+                    <option value="collapse">Collapse Card</option>
+                  </select>
+                </label>
+                <label>Dim Opacity (<span id="opacity-val">18%</span>)
+                  <input type="range" id="in-opacity" min="0.05" max="0.75" step="0.05">
+                </label>
+              </div>
+              <div class="grid3">
+                <label class="inline-label" style="padding-bottom:4px;">
+                  <input type="checkbox" id="in-age-filter"> Age Window
+                </label>
+                <label>Min Age
+                  <input type="number" id="in-min-age" min="18" max="99">
+                </label>
+                <label>Max Age
+                  <input type="number" id="in-max-age" min="18" max="99">
+                </label>
+              </div>
+              <div class="grid2">
+                <label class="inline-label" style="padding-top:12px;">
+                  <input type="checkbox" id="in-female-only"> Female only (actual females)
+                </label>
+                <label>Cache Retention (Days)
+                  <input type="number" id="in-ttl" min="1" max="90">
+                </label>
+              </div>
+              <label class="inline-label">
+                <input type="checkbox" id="in-notes"> Show private notes inline on cards
               </label>
-              <label>Card Buttons
-                <select id="in-toolbar">
-                  <option value="full">Full Labels</option>
-                  <option value="compact">Compact Icons</option>
-                  <option value="off">Hidden on Cards</option>
-                </select>
+              <label class="inline-label">
+                <input type="checkbox" id="in-noabout"> Hide cached profiles with no "About" section
               </label>
             </div>
-            <div class="grid2">
-              <label>Filter Action
-                <select id="in-mode">
-                  <option value="dim">Dim Card</option>
-                  <option value="collapse">Collapse Card</option>
-                </select>
-              </label>
-              <label>Dim Opacity (<span id="opacity-val">18%</span>)
-                <input type="range" id="in-opacity" min="0.05" max="0.75" step="0.05">
-              </label>
-            </div>
-            <div class="grid3">
-              <label class="inline-label" style="padding-bottom:4px;">
-                <input type="checkbox" id="in-age-filter"> Age Window
-              </label>
-              <label>Min Age
-                <input type="number" id="in-min-age" min="18" max="99">
-              </label>
-              <label>Max Age
-                <input type="number" id="in-max-age" min="18" max="99">
-              </label>
-            </div>
-            <div class="grid2">
-              <label class="inline-label" style="padding-top:12px;">
-                <input type="checkbox" id="in-female-only"> Female only (actual females)
-              </label>
-              <label>Cache Retention (Days)
-                <input type="number" id="in-ttl" min="1" max="90">
-              </label>
-            </div>
-            <label class="inline-label">
-              <input type="checkbox" id="in-notes"> Show private notes inline on cards
-            </label>
-            <label class="inline-label">
-              <input type="checkbox" id="in-noabout"> Hide cached profiles with no "About" section
-            </label>
 
-            <div>
+            <div class="section-box">
               <div class="rules-header">
                 <span>Content Color Categories</span>
                 <div class="row">
@@ -2522,17 +3257,45 @@
                 </div>
               </div>
               <div id="rules-list"></div>
+              <label style="margin-top:4px;">Exclude Keywords (comma-separated, ignores Limits)
+                <input type="text" id="in-exclude">
+              </label>
             </div>
 
-            <label>Exclude Keywords (comma-separated)
-              <input type="text" id="in-exclude">
-            </label>
+            <div class="section-box">
+              <div class="rules-header">
+                <span>Outreach Templates ({username})</span>
+                <div class="row">
+                  <button type="button" id="btn-reset-tpls">Reset</button>
+                  <button type="button" id="btn-add-tpl">+ Add</button>
+                </div>
+              </div>
+              <div id="tpls-list"></div>
+            </div>
 
-            <div class="row">
-              <button type="button" class="star" id="btn-save" style="flex:1;">Save UI & Filters</button>
-              <button type="button" id="btn-clear-cache" title="Clear locally cached profiles">Clear Cache</button>
-              <button type="button" id="btn-export" title="Copy JSON backup">Export</button>
-              <button type="button" id="btn-import" title="Paste JSON backup">Import</button>
+            <div class="section-box">
+              <div class="rules-header">
+                <span>Remappable Keybinds</span>
+                <button type="button" id="btn-reset-keys">Reset Keys</button>
+              </div>
+              <label class="inline-label">
+                <input type="checkbox" id="in-kb-nav"> Enable list card keyboard navigation
+              </label>
+              <div id="keybinds-list"></div>
+            </div>
+
+            <div class="section-box">
+              <div class="rules-header">
+                <span>Local Storage & Backups</span>
+                <span id="storage-size" style="font-weight:normal;color:#9ca3af;">0 KB</span>
+              </div>
+              <div class="row">
+                <button type="button" class="star" id="btn-save" style="flex:1;">Save All Settings</button>
+                <button type="button" id="btn-prune-cache" title="Delete expired cache entries for untracked profiles">Prune Expired</button>
+                <button type="button" id="btn-clear-cache" title="Wipe entire local profile cache">Clear Cache</button>
+                <button type="button" id="btn-export" title="Copy JSON backup">Export</button>
+                <button type="button" id="btn-import" title="Paste JSON backup">Import</button>
+              </div>
             </div>
             <div class="status" id="hud-status"></div>
           </div>
@@ -2542,11 +3305,18 @@
       const $ = (id) => this.shadow.getElementById(id);
       const box = $('hud-box');
       const rulesList = $('rules-list');
+      const tplsList = $('tpls-list');
+      const keybindsList = $('keybinds-list');
       this.panel = $('hud-panel');
       this.countSpan = $('card-count');
       this.cacheSpan = $('cache-status');
       this.showHiddenBtn = $('btn-hidden');
       this.pauseBtn = $('btn-pause');
+
+      const refreshStorageLabel = () => {
+        const stats = Store.getStorageStats();
+        $('storage-size').textContent = `${stats.kb} KB (${stats.cacheCount} cached, ${stats.userCount} CRM)`;
+      };
 
       const addRuleRow = (rule = { label: 'New Tag', color: '#f472b6', keywords: [] }) => {
         const row = document.createElement('div');
@@ -2581,8 +3351,93 @@
         rulesList.appendChild(row);
       };
 
+      const addTemplateRow = (tpl = { id: `tpl_${Date.now()}`, title: 'New Template', body: '' }) => {
+        const card = document.createElement('div');
+        card.className = 'tpl-card';
+        card.dataset.tplId = tpl.id || `tpl_${Date.now()}`;
+
+        const top = document.createElement('div');
+        top.className = 'row';
+
+        const titleIn = document.createElement('input');
+        titleIn.type = 'text';
+        titleIn.placeholder = 'Template Name';
+        titleIn.value = tpl.title || '';
+        titleIn.style.flex = '1';
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'rule-del';
+        delBtn.textContent = '×';
+        delBtn.title = 'Remove template';
+        delBtn.addEventListener('click', () => card.remove());
+
+        const bodyIn = document.createElement('textarea');
+        bodyIn.rows = 2;
+        bodyIn.placeholder = 'Message text (use {username} for handle)...';
+        bodyIn.value = tpl.body || '';
+
+        top.append(titleIn, delBtn);
+        card.append(top, bodyIn);
+        tplsList.appendChild(card);
+      };
+
+      const renderKeybindRows = () => {
+        keybindsList.innerHTML = '';
+        for (const item of KEYBIND_LABELS) {
+          const row = document.createElement('div');
+          row.className = 'kb-row';
+
+          const lbl = document.createElement('span');
+          lbl.textContent = item.label;
+
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'kb-btn';
+          const currentVal = this.draftKeybinds[item.key] || 'Unbound';
+          btn.textContent = this.capturingKeyAction === item.key ? 'Press key…' : currentVal;
+          if (this.capturingKeyAction === item.key) btn.classList.add('capturing');
+
+          btn.addEventListener('click', () => {
+            this.capturingKeyAction = this.capturingKeyAction === item.key ? null : item.key;
+            renderKeybindRows();
+          });
+
+          row.append(lbl, btn);
+          keybindsList.appendChild(row);
+        }
+      };
+
+      // Capture key press when remapping a keybind inside the HUD
+      this.shadow.addEventListener('keydown', (e) => {
+        if (!this.capturingKeyAction) return;
+        e.preventDefault();
+        e.stopPropagation();
+
+        if (e.key === 'Escape') {
+          this.capturingKeyAction = null;
+          renderKeybindRows();
+          return;
+        }
+        if (e.key === 'Backspace' || e.key === 'Delete') {
+          this.draftKeybinds[this.capturingKeyAction] = '';
+          this.capturingKeyAction = null;
+          renderKeybindRows();
+          return;
+        }
+
+        const combo = formatKeyComboFromEvent(e);
+        if (!combo) return;
+        this.draftKeybinds[this.capturingKeyAction] = combo;
+        this.capturingKeyAction = null;
+        renderKeybindRows();
+      }, true);
+
       const syncFormFromStore = () => {
         const s = Store.getSettings();
+        this.draftKeybinds = Object.assign({}, s.keybinds);
+        this.capturingKeyAction = null;
+
         $('in-pos').value = s.hudPosition;
         $('in-toolbar').value = s.cardToolbarMode;
         $('in-mode').value = s.hideMode;
@@ -2596,9 +3451,16 @@
         $('in-notes').checked = Boolean(s.showNotesInline);
         $('in-noabout').checked = Boolean(s.hideNoAbout);
         $('in-exclude').value = s.excludeKeywords.join(', ');
+        $('in-kb-nav').checked = Boolean(s.keybinds.navEnabled);
 
         rulesList.innerHTML = '';
         s.highlightRules.forEach(rule => addRuleRow(rule));
+
+        tplsList.innerHTML = '';
+        s.messageTemplates.forEach(tpl => addTemplateRow(tpl));
+
+        renderKeybindRows();
+        refreshStorageLabel();
       };
 
       $('btn-crm').addEventListener('click', () => {
@@ -2607,6 +3469,7 @@
       });
 
       $('btn-add-rule').addEventListener('click', () => addRuleRow());
+      $('btn-add-tpl').addEventListener('click', () => addTemplateRow());
 
       $('btn-reset-rules').addEventListener('click', () => {
         Store.resetRulesToDefaults();
@@ -2614,6 +3477,21 @@
         Array.from(document.getElementsByClassName('flx-profile-bar')).forEach(el => el.remove());
         runAll();
         $('hud-status').textContent = '✓ Loaded profile-tuned categories & excludes';
+        setTimeout(() => { $('hud-status').textContent = ''; }, 2500);
+      });
+
+      $('btn-reset-tpls').addEventListener('click', () => {
+        Store.resetTemplatesToDefaults();
+        syncFormFromStore();
+        runAll();
+        $('hud-status').textContent = '✓ Restored default outreach templates';
+        setTimeout(() => { $('hud-status').textContent = ''; }, 2500);
+      });
+
+      $('btn-reset-keys').addEventListener('click', () => {
+        Store.resetKeybindsToDefaults();
+        syncFormFromStore();
+        $('hud-status').textContent = '✓ Restored default keybinds';
         setTimeout(() => { $('hud-status').textContent = ''; }, 2500);
       });
 
@@ -2663,6 +3541,23 @@
           }
         });
 
+        const collectedTpls = [];
+        tplsList.querySelectorAll('.tpl-card').forEach((card, idx) => {
+          const title = card.querySelector('input[type="text"]').value.trim() || `Template ${idx + 1}`;
+          const body = card.querySelector('textarea').value.trim();
+          if (body.length > 0) {
+            collectedTpls.push({
+              id: card.dataset.tplId || `tpl_${idx}`,
+              title,
+              body
+            });
+          }
+        });
+
+        const nextKeybinds = Object.assign({}, this.draftKeybinds, {
+          navEnabled: $('in-kb-nav').checked
+        });
+
         const next = Store.saveSettings({
           hudPosition: $('in-pos').value,
           cardToolbarMode: $('in-toolbar').value,
@@ -2676,20 +3571,33 @@
           showNotesInline: $('in-notes').checked,
           hideNoAbout: $('in-noabout').checked,
           highlightRules: collectedRules,
+          messageTemplates: collectedTpls,
+          keybinds: nextKeybinds,
           excludeKeywords: $('in-exclude').value.split(',').map(x => x.trim()).filter(Boolean)
         });
 
         this.applyPosition(next.hudPosition);
         Array.from(document.getElementsByClassName('flx-profile-bar')).forEach(el => el.remove());
         runAll();
-        $('hud-status').textContent = '✓ Saved UI & local filter settings';
+        refreshStorageLabel();
+        $('hud-status').textContent = '✓ Saved UI, filters, templates & keybinds';
         setTimeout(() => { $('hud-status').textContent = ''; }, 2500);
+      });
+
+      $('btn-prune-cache').addEventListener('click', () => {
+        const res = Store.pruneExpiredCache();
+        Array.from(document.getElementsByClassName('flx-profile-bar')).forEach(el => el.remove());
+        runAll();
+        refreshStorageLabel();
+        $('hud-status').textContent = `✓ Pruned ${res.pruned} expired entries (${res.retainedTracked} tracked kept)`;
+        setTimeout(() => { $('hud-status').textContent = ''; }, 3000);
       });
 
       $('btn-clear-cache').addEventListener('click', () => {
         Store.clearBioCache();
         Array.from(document.getElementsByClassName('flx-profile-bar')).forEach(el => el.remove());
         runAll();
+        refreshStorageLabel();
         $('hud-status').textContent = '✓ Local profile cache cleared';
         setTimeout(() => { $('hud-status').textContent = ''; }, 2500);
       });
@@ -2731,6 +3639,15 @@
       this.showHiddenBtn.textContent = s.showHidden ? 'Showing Passed' : 'Passed Filtered';
       this.pauseBtn.className = s.paused ? 'danger' : '';
       this.pauseBtn.textContent = s.paused ? 'Paused' : 'Active';
+
+      const toggleBtn = this.shadow?.getElementById('btn-toggle');
+      if (toggleBtn && s.keybinds?.toggleCrm) {
+        toggleBtn.title = `Toggle Settings (${s.keybinds.toggleCrm} opens CRM)`;
+      }
+      const crmBtn = this.shadow?.getElementById('btn-crm');
+      if (crmBtn) {
+        crmBtn.title = `Open Local CRM Dashboard (${s.keybinds?.toggleCrm || 'Alt+C'})`;
+      }
     },
 
     updateCount(count) {
@@ -2749,7 +3666,7 @@
   };
 
   // =========================================================================
-  // 10. SAFE OBSERVER, KEYBOARD SHORTCUT & NAVIGATION HOOKS
+  // 11. SAFE OBSERVER, REMAPPABLE KEYBOARD LISTENER & NAVIGATION HOOKS
   // =========================================================================
   let debounceTimer = null;
 
@@ -2757,7 +3674,7 @@
     for (const m of mutations) {
       for (const node of m.addedNodes) {
         if (node.nodeType !== 1) continue;
-        if (node.id === 'flx-hud-host' || node.id === 'flx-crm-host') continue;
+        if (node.id === 'flx-hud-host' || node.id === 'flx-crm-host' || node.id === 'flx-kbd-toast') continue;
         const cls = typeof node.className === 'string' ? node.className : '';
         if (cls.includes('flx-')) continue;
         if (node.closest && node.closest('#flx-hud-host, #flx-crm-host, .flx-toolbar, .flx-profile-bar, .flx-chat-context')) continue;
@@ -2803,10 +3720,44 @@
   }
 
   document.addEventListener('keydown', (e) => {
-    if (e.altKey && e.key.toLowerCase() === 'c') {
+    // Yield if HUD is actively capturing a new keybind
+    if (Hud.capturingKeyAction) return;
+
+    const settings = Store.getSettings();
+    const kb = settings.keybinds || DEFAULT_KEYBINDS;
+
+    // 1. Toggle CRM Modal shortcut (works even outside inputs unless typing in a field without Alt/Ctrl/Meta)
+    if (kb.toggleCrm && matchesKeyCombo(e, kb.toggleCrm)) {
+      const hasModifier = e.altKey || e.ctrlKey || e.metaKey;
+      if (hasModifier || !isEditableTarget(e)) {
+        e.preventDefault();
+        if (CrmModal.isOpen) CrmModal.close();
+        else CrmModal.open();
+        return;
+      }
+    }
+
+    // 2. Card list navigation shortcuts (only when enabled, modal is closed, and user is not typing)
+    if (!kb.navEnabled || settings.paused || CrmModal.isOpen || isEditableTarget(e)) return;
+
+    if (matchesKeyCombo(e, kb.nextCard)) {
       e.preventDefault();
-      if (CrmModal.isOpen) CrmModal.close();
-      else CrmModal.open();
+      CardNavigator.step(1);
+    } else if (matchesKeyCombo(e, kb.prevCard)) {
+      e.preventDefault();
+      CardNavigator.step(-1);
+    } else if (matchesKeyCombo(e, kb.shortlist)) {
+      e.preventDefault();
+      CardNavigator.actOnFocused('shortlist');
+    } else if (matchesKeyCombo(e, kb.pass)) {
+      e.preventDefault();
+      CardNavigator.actOnFocused('pass');
+    } else if (matchesKeyCombo(e, kb.note)) {
+      e.preventDefault();
+      CardNavigator.actOnFocused('note');
+    } else if (matchesKeyCombo(e, kb.openTab)) {
+      e.preventDefault();
+      CardNavigator.actOnFocused('openTab');
     }
   });
 
