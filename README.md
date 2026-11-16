@@ -75,9 +75,5 @@ Expanded HUD settings include HUD corner position, card toolbar mode (`Full Labe
 ## License and usage
 
 This project is an independent browser-side enhancement for personal organization and is not affiliated with or endorsed by FetLife. Use it responsibly in accordance with FetLife's Terms of Service and your own local privacy practices.
-
-```
-
 Just make sure the userscript filename in your repo matches `FetLife-CRM-Tool.js` as referenced in step 3 of the installation instructions.
 
-```
