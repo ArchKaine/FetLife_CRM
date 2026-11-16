@@ -1,20 +1,3 @@
-Yes—your draft accurately describes **v1.5.0** across every feature, storage mechanism, shortcut (`Alt+C`), and workflow.
-
-A few small details can be tightened so the README matches the exact code behavior and reads like authoritative author documentation rather than a third-party review:
-
-* **Zero-fetch vs. "fetch-heavy":** Since v1.0.0, all background `fetch()` calls were removed completely. Stating that the script makes **zero background network requests** (operating strictly on already-rendered DOM elements) is more accurate than saying it avoids "fetch-heavy behavior."
-* **Declarative privacy wording:** Under *Safety and privacy notes*, *"The script does not appear to upload..."* sounds like an outside audit. Since it's your repository, state directly that it **never transmits or uploads** data anywhere.
-* **Exact CRM sort labels:** You listed *"relevance, recency, alpha order, or stage priority."* In v1.5.0, the exact sort options are **Most Categories Matched**, **Pipeline Stage & Notes**, **Most Recent**, and **Username (A–Z)**.
-* **Notable v1.5.0 behaviors worth calling out:**
-* **Female-only default & unknown handling:** `Female only` is enabled by default and only filters confirmed non-female labels—cards without a visible gender tag stay visible until you visit their profile.
-* **One-badge-per-category cap:** Each color category displays at most **one badge per profile/card** (favoring visible post/card text over cached bio text) to keep cards clean, while multi-category matches light up as colored indicator dots (`● ● ●`).
-* **Fetishes & sub-tab merging:** Visiting a profile's `/posts` (Writings), `/l` (Lists), or `#profile-fetishes` section passively merges that data into the user's cache and splits fetishes into **Into / Curious** vs. **Limits** inside the CRM modal.
-
-
-* **Formatting cleanups:** The `@match`/`@grant` metadata block is collapsed onto one line, and there is a duplicate `# FetLife_CRM` header stuck at the very bottom.
-
-### Cleaned-Up `README.md` (Ready to Paste)
-
 ```markdown
 # FetLife_CRM
 
