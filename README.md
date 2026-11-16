@@ -1,213 +1,71 @@
 # FetLife_CRM
 
-A local-only FetLife CRM and profile filtering tool designed to help you track, screen, and organize profiles without sending data anywhere off your browser. The script works as a userscript for ViolentMonkey (and other userscript managers compatible with `@grant`/`GM_*` APIs) and enhances FetLife pages by caching profile text locally, adding status controls, note-taking, and a searchable CRM dashboard.
+A local-only FetLife CRM and profile filtering userscript designed to help you track, screen, and organize profiles without sending any data off your browser. Built for **Violentmonkey** (and other userscript managers supporting `GM_getValue` / `GM_setValue`), it enhances FetLife pages by passively caching profile text locally, adding 5-stage vetting controls, inline note-taking, chat context strips, and a searchable CRM dashboard.
 
 ## What this tool does
 
-This script is built around a few core workflows:
+* **Zero-fetch passive profile caching**
+  * Reads profile content already rendered in the DOM while you browse normally—making **zero background network requests**.
+  * Extracts and merges **About** text, **Fetishes & Limits** (`Into` vs. `Limits`), **Writings / Lists**, age, gender, and location into local browser storage with a configurable retention TTL (default: 14 days).
+* **Female-only and age window filtering**
+  * Enabled by default (`Female only`), filtering out confirmed non-female gender markers while leaving untagged list cards visible until visited.
+  * Optional **Age Window** filter (default `30–45`) to dim or collapse cards outside your target age range.
+* **Five-stage vetting pipeline**
+  * Tracks profiles across five color-coded stages:
+    * `★ Shortlist`
+    * `✉ Messaged`
+    * `💬 Talking`
+    * `☕ Met IRL`
+    * `✕ Pass`
+  * Automatically records a `Contacted YYYY-MM-DD` date when you move someone into `Messaged`, `Talking`, or `Met IRL`.
+* **Category-colored keyword matching & exclusions**
+  * Ships with 6 customizable color categories (*Family / Vee*, *Sensation / Play*, *Sober / Lifestyle*, *Neurotype / Style*, *Local / PDX*, and *Geek / Metal*) plus a `+ Add` / `Reset Defaults` editor.
+  * Caps badges at **one per category type** (prioritizing visible card/post text over cached bio text) and displays multi-category indicator dots (`● ● ●`) on cards and CRM rows.
+  * Flags and filters configurable exclude keywords (e.g., `findom`, `tribute`, `shibari`, `420`).
+* **Dim / collapse & empty-About filtering**
+  * Dims (configurable opacity) or collapses profiles marked `Passed`, matching excluded keywords, or falling outside your demographic filters.
+  * Optional toggle to hide cached profiles that lack an **About** section.
+  * Quick HUD toggle (`Passed Filtered` / `Showing Passed`) to reveal or re-hide filtered cards at any time.
+* **Private notes & follow-up tracking**
+  * Save multi-line private notes per user, displayed inline on cards (optional) and editable directly inside the CRM dashboard.
+  * Tracks `Viewed` and `Contacted` dates automatically.
+* **Inbox & Chat Dock context strips**
+  * Injects a compact CRM strip into `/inbox`, `/conversations`, and FetLife's floating bottom-right chat dock so you can view demographics, category matches, notes, and cached About excerpts while messaging.
+* **Searchable local CRM dashboard (`Alt+C`)**
+  * Opens an isolated modal dashboard to search across usernames, locations, notes, cached About sections, and fetishes.
+  * Filter by pipeline stage, gender (`Female Only`, `All Genders`, `Gender Unknown`, `Other / Non-Female`), min/max age, category match, note presence, or cache status.
+  * Sort by **Most Categories Matched**, **Pipeline Stage & Notes**, **Most Recent**, or **Username (A–Z)**.
+  * Includes tabbed cache previews (**About**, **Fetishes & Limits**, **Full Cache**), inline note saving, stage switching, and single-user deletion.
+* **JSON backup and restore**
+  * Exports all settings, user records, and cached profiles as JSON to your clipboard and restores them via Import.
 
-- Passive local profile caching
-  - Reads profile content already on the page while you browse FetLife.
-  - Stores profile text, fetish details, age, gender inference, notes, and status locally in browser storage.
-  - Avoids fetch-heavy behavior by using data already present in the DOM and saving it locally for later review.
+## Safety and privacy
 
-- Female-only and age filtering
-  - Detects likely female profiles and optionally hides non-female matches when `Female only` is enabled.
-  - Supports minimum and maximum age filtering for quick screening.
-  - Uses local cache and current page metadata to evaluate matches.
+* **100% local-first:** All settings, notes, stage statuses, and cached profile text stay inside Violentmonkey storage (`GM_*`) and browser `localStorage`.
+* **No external servers or background crawling:** The script never transmits data to any remote server and never fires automated background `fetch()` requests—it only reads pages you open yourself while logged in.
 
-- Five-stage vetting pipeline
-  - Tracks profiles through a pipeline with statuses such as:
-    - Shortlisted
-    - Messaged
-    - Talking
-    - Met IRL
-    - Passed
-  - Each status is displayed in the profile card toolbar and chat/inbox context strip.
+## Installation with Violentmonkey
 
-- Highlight-based category matching
-  - Lets you define color-coded keyword categories such as values, kink, lifestyle, neurotype, local fit, or geek/metal preferences.
-  - Matches are shown as pills and dots on cards and in CRM rows.
-  - Can also flag excluded keywords like `findom`, `tribute`, `shibari`, etc.
-
-- Hide / dim filter behavior
-  - Can dim or collapse profiles that match filters or are marked as passed.
-  - Can hide cached profiles that lack an About section.
-  - Lets you decide whether to show hidden or filtered profiles in the UI.
-
-- Notes and follow-up tracking
-  - Add private notes to individual users.
-  - Notes can be shown inline on cards or in the CRM dashboard.
-  - Tracks last seen / last contacted dates for relationship management.
-
-- Chat and inbox context strips
-  - Adds a compact CRM strip to inbox and chat contexts so you can see the partner's tracked status while messaging.
-  - Helps you keep notes and stage tracking visible without leaving the thread.
-
-- Full local CRM dashboard
-  - Opens a searchable modal dashboard with filters for:
-    - gender
-    - age range
-    - category matches
-    - note presence
-    - stage status
-    - caching status
-  - Lets you sort by relevance, recency, alpha order, or stage priority.
-  - Includes direct profile links, save-note fields, stage controls, and cached profile previews.
-
-- Backup and restore
-  - Exports all settings, user records, and local cache as JSON.
-  - Imports the JSON backup later to restore your CRM state.
-
-- Local-only data model
-  - Stores data in browser local storage and ViolentMonkey `GM_*` storage when available.
-  - No central server or external sync is required.
-
-## Capabilities in practice
-
-This script is intended to act like a personal FetLife triage layer:
-
-- You browse normally on FetLife.
-- Profiles are identified, parsed, and cached locally.
-- You mark promising people as shortlisted or messaged.
-- The script highlights matching interests or lifestyle signals.
-- You can hide low-fit profiles or profiles without About text.
-- You can keep a running CRM of people you have contacted, notes for them, and stage progression.
-
-This makes it useful for managing a large number of profiles without needing a separate database or external service.
-
-## Safety and privacy notes
-
-This script is intentionally local-first.
-
-- Data is kept in the browser's local storage or userscript storage.
-- The script does not appear to upload your notes, cached biographies, or CRM state to a remote service.
-- Because it works by reading DOM content on pages you already visit, it depends on you being signed in and browsing those pages normally.
-
-Use it responsibly and only on sites and profiles you are already authorized to view.
-
-## Installation with ViolentMonkey
-
-1. Install the ViolentMonkey browser extension.
-   - Chrome / Chromium: install from the Chrome Web Store.
-   - Firefox: install from AMO or the browser extension store.
-   - Edge: install from the extension store if applicable.
-
-2. Open ViolentMonkey.
-
-3. Create a new userscript.
-   - Click the add/new script button.
-   - Paste the full contents of `FetLife-CRM-Tool.js` into the editor.
-
-4. Save the script.
-
-5. Ensure the script is enabled.
-
-6. Reload FetLife and browse a profile or page.
-
-7. The HUD should appear in the corner of the page (default position: bottom-right).
+1. Install the **Violentmonkey** browser extension (Chrome/Chromium, Firefox, or Edge).
+2. Open the Violentmonkey dashboard and click **+** (Create a new script).
+3. Paste the full contents of `FetLife-CRM-Tool.js` into the editor and save (`Ctrl+S`).
+4. Ensure the script is enabled, then reload FetLife. The floating HUD pill will appear in the bottom-right corner.
 
 ## How to use it
 
 ### The floating HUD
+* **`FL (N) ▲`:** Shows how many user cards/posts were processed on the current page; click to expand settings.
+* **`CRM`:** Opens the Local CRM dashboard (shortcut: `Alt+C`, close with `Esc`).
+* **`Passed Filtered` / `Showing Passed`:** Toggles visibility of dimmed/collapsed profiles.
+* **`Active` / `Paused`:** Temporarily suspends page processing.
+* **`Cached: N`:** Displays how many profiles are stored in your local cache.
 
-After the script runs, a small floating HUD appears in the corner of the page.
+Expanded HUD settings include HUD corner position, card toolbar mode (`Full Labels`, `Compact Icons`, `Hidden on Cards`), dim vs. collapse action, dim opacity slider, Age Window bounds, `Female only` toggle, cache retention days, empty-About hiding, color category rules, keyword exclusions, and JSON Export/Import.
 
-Controls typically include:
-
-- FL counter: how many card/profile entries were processed
-- CRM button: open the local CRM dashboard
-- Passed toggle: show or hide filtered profiles
-- Pause toggle: temporarily stop processing
-- Cache status: shows how many profiles are locally cached
-
-The HUD also contains configuration for:
-
-- HUD location
-- card toolbar mode
-- dim/collapse behavior
-- age filtering
-- female-only filtering
-- cache retention
-- highlight rules
-- keyword exclusions
-- private note visibility
-
-### Profile actions
-
-On profile cards or pages, the script adds controls for each user so you can:
-
-- mark as Shortlist
-- set pipeline stage
-- pass / hide the profile
-- add a note
-- see demographic metadata
-- see match categories in colored badges
-
-### CRM dashboard
-
-Press Alt+C or click the CRM button in the HUD to open the dashboard.
-
-From there you can:
-
-- search by username, note, location, keywords, or cached bio text
-- filter by gender and age range
-- filter by pipeline stage and category match
-- sort by recency, matches, alpha, or stage priority
-- edit notes inline
-- change stage directly from the dashboard
-- delete users from local tracking
-- export/import the full JSON backup
-
-### Local profile cache
-
-The script caches profile information it already sees, including:
-
-- About text
-- fetish/limit data
-- header text
-- age and gender inference
-- location hints
-- profile text summaries
-
-This allows faster review later and supports CRM filtering without needing to re-fetch the same profile information repeatedly.
-
-## Included script metadata
-
-The userscript includes the following match rules:
-
-```js
-// @match        https://fetlife.com/*
-// @match        https://*.fetlife.com/*
+### Userscript header metadata
+```javascript
+// @match        [https://fetlife.com/](https://fetlife.com/)*
+// @match        https://*[.fetlife.com/](https://.fetlife.com/)*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @run-at       document-idle
-```
-
-This means it is designed to run on FetLife pages as soon as the document is idle.
-
-## Quick start example
-
-1. Install the script in ViolentMonkey.
-2. Open FetLife and browse a profile.
-3. Confirm the HUD appears.
-4. Set a few highlight categories you care about.
-5. Enable `Female only` if desired.
-6. Mark promising profiles as `Shortlist` or `Messaged`.
-7. Open CRM with Alt+C to review your tracked profiles.
-8. Export the JSON backup whenever you want a local copy of your tracked data.
-
-## Notes about repository status
-
-This repository presently contains a single userscript file, `FetLife-CRM-Tool.js`, plus this README. The script is functional in userscript environments and is intended to be used on FetLife while you browse.
-
-## License and usage
-
-This project is not an official FetLife product or service. It is a browser-side enhancement for personal use. Please use it in line with the platform's terms of service and your own local privacy / safety practices.
-
-If you want to make changes, fork the repo and edit the userscript as needed. For users specifically using ViolentMonkey, the script should be pasted directly as a userscript and enabled in the browser.
-
-```markdown
-# FetLife_CRM
-A filtering tool for FetLife
-```
