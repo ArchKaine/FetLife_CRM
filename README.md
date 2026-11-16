@@ -1,4 +1,3 @@
-```markdown
 # FetLife_CRM
 
 A local-only FetLife CRM and profile filtering userscript designed to help you track, screen, and organize profiles without sending any data off your browser. Built for **Violentmonkey** (and other userscript managers supporting `GM_getValue` / `GM_setValue`), it enhances FetLife pages by passively caching profile text locally, adding 5-stage vetting controls, inline note-taking, chat context strips, and a searchable CRM dashboard.
