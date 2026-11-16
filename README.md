@@ -83,7 +83,7 @@ A local-only FetLife CRM and profile filtering userscript (`v1.6.0`) designed to
 // @grant        GM_setValue
 // @grant        GM_openInTab
 // @run-at       document-idle
-
+```
 License and usage
 
 This project is an independent browser-side enhancement for personal organization and is not affiliated with or endorsed by FetLife. Use it responsibly in accordance with FetLife's Terms of Service and your own local privacy practices.
