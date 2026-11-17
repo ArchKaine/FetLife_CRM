@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         FetLife Local Cache Filter & CRM
 // @namespace    local.fl.enhancer
-// @version      1.11.0
-// @description  Zero-fetch passive profile & fetish caching, Fetishes-only red-kink exclusions, toggleable Minimal/Compact/Full card views, sticky profile controls, gender/age filtering, and searchable CRM modal
+// @version      1.11.5
+// @description  Zero-fetch passive profile & fetish caching, Fetishes-only red-kink exclusions, toggleable Minimal/Compact/Full overlay modes, sticky profile controls, gender/age filtering, and searchable CRM modal
 // @match        https://fetlife.com/*
 // @match        https://*.fetlife.com/*
 // @grant        GM_getValue
@@ -136,10 +136,10 @@
 
   const KEYBIND_LABELS = [
     { key: 'toggleCrm',     label: 'Toggle CRM Modal' },
-    { key: 'cycleView',     label: 'Cycle Global Card View' },
+    { key: 'cycleView',     label: 'Cycle Global Overlay View' },
     { key: 'nextCard',      label: 'Next Card in List' },
     { key: 'prevCard',      label: 'Previous Card in List' },
-    { key: 'toggleMinimal', label: 'Toggle Focused Card Minimal' },
+    { key: 'toggleMinimal', label: 'Toggle Focused Overlay Minimal' },
     { key: 'shortlist',     label: 'Shortlist Focused Card' },
     { key: 'pass',          label: 'Pass / Hide Focused Card' },
     { key: 'cycleGender',   label: 'Cycle Gender (♀/♂/⚧/Auto)' },
@@ -163,7 +163,7 @@
     paused: false,
     hudPosition: 'bottom-right',      // 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left'
     cardViewMode: 'full',             // 'full' | 'compact' | 'minimal' | 'off'
-    cardToolbarPosition: 'top-sticky',// 'top-sticky' | 'top' | 'bottom'
+    cardToolbarPosition: 'bottom',    // 'bottom' | 'top' | 'top-sticky'
     stickyProfileBar: true,
     showNotesInline: true,
     bioCacheTtlDays: 14
@@ -176,7 +176,8 @@
     'activity', 'home', 'login', 'signup', 'tags', 'festivals', 'about', 'help',
     'guidelines', 'safety', 'merch', 'gift_certificates', 'supporters', 'glossary',
     'chat', 'live', 'contact', 'logout', 'api', 'assets', 'notifications_settings',
-    'inbox', 'verify', 'languages', 'legal', 'kinktionary', 'tiles'
+    'inbox', 'verify', 'languages', 'legal', 'kinktionary', 'tiles', 'communities',
+    'mutes', 'likes', 'stories', 'feed_events', 'nav', 'sidebar', 'ama'
   ]);
 
   const PROFILE_SUBTABS = new Set([
@@ -730,7 +731,7 @@
   };
 
   // =========================================================================
-  // 4. COLOR, URL, DEMOGRAPHIC, GROUPS & FETLIFE DOM PARSERS (NO BRACKETS)
+  // 4. COLOR, URL, DEMOGRAPHIC, GROUPS & FETLIFE DOM PARSERS
   // =========================================================================
   function hexToRgba(hex, alpha) {
     const clean = (hex || '#38bdf8').replace('#', '').trim();
@@ -773,14 +774,24 @@
     const flUser = window.FL && window.FL.user;
     const selfId = flUser && flUser.id ? String(flUser.id) : null;
     let selfUsername = null;
-    const sidebar = document.getElementById('account-sidebar');
-    if (sidebar) {
-      const anchors = sidebar.getElementsByTagName('a');
-      for (const a of anchors) {
-        const parsed = parseUserHref(a.getAttribute('href'));
-        if (parsed && parsed.username) {
-          selfUsername = parsed.key;
-          break;
+
+    // Also check status composer link (e.g., <a href="/Kuojin" title="Go to your profile">)
+    const composerLink = document.querySelector('#feed-status-form a[href^="/"]');
+    if (composerLink) {
+      const p = parseUserHref(composerLink.getAttribute('href'));
+      if (p && p.username) selfUsername = p.key;
+    }
+
+    if (!selfUsername) {
+      const sidebar = document.getElementById('account-sidebar');
+      if (sidebar) {
+        const anchors = sidebar.getElementsByTagName('a');
+        for (const a of anchors) {
+          const parsed = parseUserHref(a.getAttribute('href'));
+          if (parsed && parsed.username) {
+            selfUsername = parsed.key;
+            break;
+          }
         }
       }
     }
@@ -1002,6 +1013,20 @@
   }
 
   function resolveAuthorFromPostOrCard(container, link, initialParsed) {
+    // If container is a FetLife feed <article data-dwell-author-path="/Username">, use that author directly
+    if (container.dataset && container.dataset.dwellAuthorPath) {
+      const dwellParsed = parseUserHref(container.dataset.dwellAuthorPath);
+      if (dwellParsed && dwellParsed.username) {
+        const demos = parseDemographicsFromContainer(container);
+        return {
+          key: dwellParsed.key,
+          username: dwellParsed.username,
+          profileUrl: dwellParsed.url,
+          demographics: demos
+        };
+      }
+    }
+
     let username = initialParsed.username;
 
     if (!username) {
@@ -1041,30 +1066,58 @@
     };
   }
 
+  function containsEditableComposer(el) {
+    if (!el || el.nodeType !== 1) return false;
+    return Boolean(
+      el.querySelector(
+        'textarea, lexxy-editor, [contenteditable="true"], input[type="text"], input[type="search"]'
+      )
+    );
+  }
+
   function findPostOrCardContainer(link, root) {
-    if (link.closest('p, blockquote, pre, code')) return null;
+    // Never attach toolbars inside prose, forms, status composers, or modals
+    if (link.closest('p, blockquote, pre, code, form, label, dialog, #feed-status-form')) return null;
 
-    const commentItem = link.closest('li');
-    if (commentItem && root.contains(commentItem)) {
-      return commentItem;
-    }
-
+    // 1. Check <article> FIRST so sub-lists inside feed stories (e.g., "X followed Y, Z")
+    // do not get hijacked as individual broken <li> cards
     const article = link.closest('article');
     if (article && root.contains(article)) {
+      if (containsEditableComposer(article)) return null;
       const allAnchors = article.getElementsByTagName('a');
       for (const a of allAnchors) {
-        if (a.closest('.flx-toolbar, .flx-profile-bar, p, blockquote')) continue;
+        if (a.closest('.flx-toolbar, .flx-profile-bar, p, blockquote, form')) continue;
         if (parseUserHref(a.getAttribute('href'))) {
           return a === link ? article : null;
         }
       }
+      return null;
     }
 
+    // 2. Standalone <li> items (comments or member directory lists outside <article>)
+    const commentItem = link.closest('li');
+    if (commentItem && root.contains(commentItem)) {
+      if (containsEditableComposer(commentItem)) return null;
+      const liAnchors = commentItem.getElementsByTagName('a');
+      for (const a of liAnchors) {
+        if (a.closest('.flx-toolbar, .flx-profile-bar, p, blockquote, form')) continue;
+        if (parseUserHref(a.getAttribute('href'))) {
+          return a === link ? commentItem : null;
+        }
+      }
+      return null;
+    }
+
+    // 3. Member cards / grid tiles (e.g. search results, RSPVs, group members)
     let el = link.parentElement;
     let bestSingleCard = null;
     let depth = 0;
 
     while (el && el !== root && el !== document.body && depth < 7) {
+      if (containsEditableComposer(el)) {
+        break;
+      }
+
       if (el.dataset && el.dataset.flxUser) {
         return el.dataset.flxLinkHref === link.getAttribute('href') ? el : null;
       }
@@ -1074,7 +1127,7 @@
       const anchors = el.getElementsByTagName('a');
 
       for (const a of anchors) {
-        if (a.closest('.flx-toolbar, .flx-profile-bar, p, blockquote')) continue;
+        if (a.closest('.flx-toolbar, .flx-profile-bar, p, blockquote, form')) continue;
         const p = parseUserHref(a.getAttribute('href'));
         if (!p) continue;
         if (!firstUserAnchor) firstUserAnchor = a;
@@ -1112,7 +1165,7 @@
   }
 
   // =========================================================================
-  // 5. PROFILE, ABOUT, GROUPS & FETISH SECTION PARSER (NO BRACKETS)
+  // 5. PROFILE, ABOUT, GROUPS & FETISH SECTION PARSER
   // =========================================================================
   function cleanSectionText(raw) {
     return (raw || '')
@@ -1173,7 +1226,6 @@
         continue;
       }
 
-      // Check section headers (semantic headings or leaf label elements like <div>Limits</div>)
       const isHeadingTag = /^H[1-6]$/.test(tag) || tag === 'STRONG' || tag === 'DT' || tag === 'B';
       const isLeafLabel = node.children.length === 0;
       if (isHeadingTag || isLeafLabel) {
@@ -1455,7 +1507,7 @@
   }
 
   // =========================================================================
-  // 7. SHARED UI COMPONENTS & MINIMAL/COMPACT/FULL CARD VIEW ENGINE
+  // 7. SHARED UI COMPONENTS & OVERLAY ENGINE
   // =========================================================================
   function createMatchDotsCluster(ruleHits, limitConflicts = [], excludedHits = []) {
     if (!ruleHits || ruleHits.length === 0) return null;
@@ -1517,13 +1569,13 @@
     const mg = record.manualGender || '';
 
     if (mg === 'female') {
-      sel.style.cssText = 'background:rgba(244,114,182,0.18);color:#f9a8d4;border:1px solid #db2777;border-radius:5px;padding:2px 5px;font-size:11px;cursor:pointer;font-weight:600;';
+      sel.style.cssText = 'background:rgba(244,114,182,0.18);color:#f9a8d4;border:1px solid #db2777;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;font-weight:600;';
     } else if (mg === 'male') {
-      sel.style.cssText = 'background:rgba(59,130,246,0.18);color:#93c5fd;border:1px solid #2563eb;border-radius:5px;padding:2px 5px;font-size:11px;cursor:pointer;font-weight:600;';
+      sel.style.cssText = 'background:rgba(59,130,246,0.18);color:#93c5fd;border:1px solid #2563eb;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;font-weight:600;';
     } else if (mg === 'other') {
-      sel.style.cssText = 'background:rgba(168,85,247,0.18);color:#d8b4fe;border:1px solid #7e22ce;border-radius:5px;padding:2px 5px;font-size:11px;cursor:pointer;font-weight:600;';
+      sel.style.cssText = 'background:rgba(168,85,247,0.18);color:#d8b4fe;border:1px solid #7e22ce;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;font-weight:600;';
     } else {
-      sel.style.cssText = 'background:#202024;color:#a1a1aa;border:1px solid #3f3f46;border-radius:5px;padding:2px 5px;font-size:11px;cursor:pointer;';
+      sel.style.cssText = 'background:#202024;color:#a1a1aa;border:1px solid #3f3f46;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;';
     }
 
     sel.title = 'Override Gender (for profiles that do not state gender)';
@@ -1533,9 +1585,9 @@
 
     const opts = [
       { val: '',       text: compact ? `G:${autoHint}` : `Gender: Auto (${autoHint})`, color: '#e4e4e7' },
-      { val: 'female', text: compact ? '♀ F' : '♀ Female',                           color: '#f9a8d4' },
-      { val: 'male',   text: compact ? '♂ M' : '♂ Male',                             color: '#93c5fd' },
-      { val: 'other',  text: compact ? '⚧ Oth' : '⚧ Other',                          color: '#d8b4fe' }
+      { val: 'female', text: compact ? '♀ F' : '♀ Female',                             color: '#f9a8d4' },
+      { val: 'male',   text: compact ? '♂ M' : '♂ Male',                               color: '#93c5fd' },
+      { val: 'other',  text: compact ? '⚧ Oth' : '⚧ Other',                            color: '#d8b4fe' }
     ];
 
     for (const o of opts) {
@@ -1562,12 +1614,17 @@
   }
 
   function applyCardAccentStyle(el, status, ruleHits, isFilteredOut, settings) {
+    // Target the inner card box if this is a borderless <article>
+    const targetBox = (el.tagName === 'ARTICLE' && el.firstElementChild && el.firstElementChild.tagName === 'DIV')
+      ? el.firstElementChild
+      : el;
+
     el.style.opacity = '';
     el.style.display = '';
-    el.style.outline = '';
-    el.style.borderLeft = '';
-    el.style.backgroundColor = '';
-    el.style.boxShadow = '';
+    targetBox.style.outline = '';
+    targetBox.style.borderLeft = '';
+    targetBox.style.backgroundColor = '';
+    targetBox.style.boxShadow = '';
 
     if (isFilteredOut && !settings.showHidden) {
       if (settings.hideMode === 'collapse') {
@@ -1580,37 +1637,27 @@
 
     if (ruleHits.length > 0) {
       const primary = ruleHits[0];
-      el.style.outline = `1px solid ${hexToRgba(primary.color, 0.75)}`;
-      el.style.backgroundColor = hexToRgba(primary.color, 0.08);
+      targetBox.style.outline = `1px solid ${hexToRgba(primary.color, 0.75)}`;
       if (ruleHits.length >= 2) {
         const secondary = ruleHits[1];
-        el.style.boxShadow = `inset 0 2px 0 0 ${primary.color}, inset 0 -2px 0 0 ${secondary.color}`;
+        targetBox.style.boxShadow = `inset 0 2px 0 0 ${primary.color}, inset 0 -2px 0 0 ${secondary.color}`;
       }
     }
 
     const stageDef = status ? STAGE_MAP[status] : null;
     if (stageDef && status !== 'hidden') {
-      el.style.borderLeft = `4px solid ${stageDef.color}`;
+      targetBox.style.borderLeft = `4px solid ${stageDef.color}`;
       if (ruleHits.length === 0) {
-        el.style.outline = `1px solid ${stageDef.border}`;
-        el.style.backgroundColor = stageDef.bg;
+        targetBox.style.outline = `1px solid ${stageDef.border}`;
       }
     }
   }
 
-  function setContainerNativeContentHidden(container, shouldHide) {
-    for (const child of container.children) {
-      if (child.classList && child.classList.contains('flx-toolbar')) continue;
-      if (shouldHide) {
-        if (!('flxOrigDisplay' in child.dataset)) {
-          child.dataset.flxOrigDisplay = child.style.display || '';
-        }
-        child.style.display = 'none';
-      } else if ('flxOrigDisplay' in child.dataset) {
-        child.style.display = child.dataset.flxOrigDisplay;
-        delete child.dataset.flxOrigDisplay;
-      }
-    }
+  function isInlineFlexRowItem(container) {
+    if (!container || container.nodeType !== 1) return false;
+    const cs = window.getComputedStyle(container);
+    return (cs.display === 'flex' || cs.display === 'inline-flex') &&
+      (cs.flexDirection === 'row' || cs.flexDirection === 'row-reverse');
   }
 
   function buildToolbar(userKey, settings, onUpdate, options = {}) {
@@ -1618,28 +1665,30 @@
       viewMode = 'full',      // 'full' | 'compact' | 'minimal'
       isProfileBar = false,
       displayHandle = null,
-      profileUrl = null,
       demos = null,
-      isStickyTop = false,
+      isInlineRow = false,
       onToggleCardView = null
     } = options;
 
     const record = Store.getUser(userKey);
-    const isMinimal = !isProfileBar && viewMode === 'minimal';
+    const isMinimal = !isProfileBar && (viewMode === 'minimal' || isInlineRow);
     const isCompact = !isProfileBar && viewMode === 'compact';
     const compactControls = !isProfileBar && (isCompact || isMinimal);
 
     const bar = document.createElement('div');
     bar.className = 'flx-toolbar';
 
-    if (isMinimal) {
-      bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin:2px 0;padding:4px 8px;background:rgba(22,22,27,0.9);border:1px solid #2e2e38;border-radius:6px;position:relative;z-index:5;font-family:system-ui,-apple-system,sans-serif;';
+    if (isProfileBar) {
+      bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin:0;flex:1 1 auto;background:transparent;border:none;padding:0;font-family:system-ui,-apple-system,sans-serif;';
+    } else if (isInlineRow) {
+      // Inline row item (like a single-line <li>): stay inline on the right without wrapping or pushing text down
+      bar.style.cssText = 'display:inline-flex;flex-wrap:nowrap;align-items:center;gap:4px;margin-left:auto;padding:1px 6px;flex:0 0 auto;background:rgba(20,20,25,0.88);border:1px solid #2e2e38;border-radius:5px;font-family:system-ui,-apple-system,sans-serif;z-index:5;';
+    } else if (isMinimal) {
+      bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin:2px 0 6px 0;padding:2px 6px;width:100%;box-sizing:border-box;background:rgba(20,20,25,0.82);border:1px solid rgba(63,63,70,0.6);border-radius:5px;font-family:system-ui,-apple-system,sans-serif;';
     } else if (isCompact) {
-      bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin:0 0 4px 0;padding:2px 0;background:transparent;border:none;position:relative;z-index:5;font-family:system-ui,-apple-system,sans-serif;';
-    } else if (isStickyTop) {
-      bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin:0 0 6px 0;padding:5px 8px;position:sticky;top:var(--flx-sticky-top, 62px);z-index:25;background:rgba(20,20,25,0.94);backdrop-filter:blur(8px);border:1px solid #30303a;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.45);font-family:system-ui,-apple-system,sans-serif;';
+      bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin:2px 0 6px 0;padding:3px 7px;width:100%;box-sizing:border-box;background:rgba(22,22,27,0.88);border:1px solid #2e2e38;border-radius:6px;font-family:system-ui,-apple-system,sans-serif;';
     } else {
-      bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin-top:6px;margin-bottom:4px;position:relative;z-index:5;font-family:system-ui,-apple-system,sans-serif;';
+      bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin:2px 0 8px 0;padding:4px 8px;width:100%;box-sizing:border-box;background:rgba(20,20,25,0.92);border:1px solid #2e2e38;border-radius:6px;font-family:system-ui,-apple-system,sans-serif;';
     }
 
     const stopNav = (e) => {
@@ -1665,37 +1714,25 @@
       onUpdate();
     };
 
-    const baseBtnStyle = 'background:#202024;color:#d4d4d8;border:1px solid #3f3f46;border-radius:5px;padding:2px 7px;cursor:pointer;font-size:11px;line-height:1.45;transition:background 0.15s,border-color 0.15s;';
+    const baseBtnStyle = isMinimal
+      ? 'background:#202024;color:#d4d4d8;border:1px solid #3f3f46;border-radius:4px;padding:1px 5px;cursor:pointer;font-size:10px;line-height:1.35;transition:background 0.15s,border-color 0.15s;'
+      : 'background:#202024;color:#d4d4d8;border:1px solid #3f3f46;border-radius:5px;padding:1px 6px;cursor:pointer;font-size:11px;line-height:1.4;transition:background 0.15s,border-color 0.15s;';
 
-    if (!isProfileBar && typeof onToggleCardView === 'function') {
+    if (!isProfileBar && !isInlineRow && typeof onToggleCardView === 'function') {
       const viewToggleBtn = document.createElement('button');
       viewToggleBtn.type = 'button';
       viewToggleBtn.style.cssText = isMinimal
-        ? `${baseBtnStyle}background:rgba(56,189,248,0.14);border-color:#0284c7;color:#7dd3fc;font-weight:700;padding:2px 6px;`
-        : `${baseBtnStyle}color:#9ca3af;padding:2px 6px;`;
+        ? `${baseBtnStyle}background:rgba(56,189,248,0.14);border-color:#0284c7;color:#7dd3fc;font-weight:700;`
+        : `${baseBtnStyle}color:#9ca3af;`;
       viewToggleBtn.textContent = isMinimal ? '▸' : '▾';
       viewToggleBtn.title = isMinimal
-        ? 'Expand card to Full view (M)'
-        : 'Collapse card to Minimal strip (M)';
+        ? 'Expand overlay to Full view (M)'
+        : 'Condense overlay to Minimal strip (M)';
       viewToggleBtn.addEventListener('click', (e) => {
         stopNav(e);
         onToggleCardView();
       });
       bar.appendChild(viewToggleBtn);
-    }
-
-    if (isMinimal) {
-      const handleText = displayHandle || userKey;
-      const userLink = document.createElement('a');
-      userLink.href = profileUrl || `${window.location.origin}/${handleText}`;
-      userLink.textContent = `/${handleText}`;
-      const demoSummary = formatDemographicSummary(demos?.age, demos?.gender, demos?.genderRole, demos?.location, demos?.isManualGender);
-      if (demoSummary) {
-        userLink.title = `${handleText} • ${demoSummary}`;
-      }
-      userLink.style.cssText = 'color:#93c5fd;font-weight:700;font-size:12px;text-decoration:none;margin-right:2px;';
-      userLink.addEventListener('click', (e) => e.stopPropagation());
-      bar.appendChild(userLink);
     }
 
     const isStarred = record.status === 'shortlist';
@@ -1714,8 +1751,8 @@
     const stageSelect = document.createElement('select');
     const activeStage = record.status ? STAGE_MAP[record.status] : null;
     stageSelect.style.cssText = activeStage
-      ? `background:${activeStage.bg};color:${activeStage.color};border:1px solid ${activeStage.border};border-radius:5px;padding:2px 5px;font-size:11px;cursor:pointer;font-weight:600;`
-      : 'background:#202024;color:#a1a1aa;border:1px solid #3f3f46;border-radius:5px;padding:2px 5px;font-size:11px;cursor:pointer;';
+      ? `background:${activeStage.bg};color:${activeStage.color};border:1px solid ${activeStage.border};border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;font-weight:600;`
+      : 'background:#202024;color:#a1a1aa;border:1px solid #3f3f46;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;';
     stageSelect.title = 'Vetting Pipeline Stage';
 
     const noneOpt = document.createElement('option');
@@ -1777,24 +1814,28 @@
       }
     });
 
-    bar.append(starBtn, stageSelect, genderSelect, passBtn, noteBtn);
+    if (isMinimal) {
+      bar.append(starBtn, passBtn, noteBtn, genderSelect);
+    } else {
+      bar.append(starBtn, stageSelect, genderSelect, passBtn, noteBtn);
+    }
 
-    if (isProfileBar || viewMode === 'full') {
+    if (!isInlineRow && (isProfileBar || viewMode === 'full')) {
       if (record.lastContacted && record.status !== 'hidden') {
         const contacted = document.createElement('span');
-        contacted.style.cssText = 'font-size:11px;color:#7dd3fc;padding:1px 6px;background:rgba(56,189,248,0.1);border:1px solid rgba(56,189,248,0.28);border-radius:4px;';
+        contacted.style.cssText = 'font-size:10px;color:#7dd3fc;padding:1px 5px;background:rgba(56,189,248,0.1);border:1px solid rgba(56,189,248,0.28);border-radius:4px;';
         contacted.textContent = `Contacted ${record.lastContacted}`;
         bar.appendChild(contacted);
       } else if (record.lastSeen && record.status !== 'hidden') {
         const seen = document.createElement('span');
-        seen.style.cssText = 'font-size:11px;color:#9ca3af;padding:1px 6px;border:1px solid #333;border-radius:4px;';
+        seen.style.cssText = 'font-size:10px;color:#9ca3af;padding:1px 5px;border:1px solid #333;border-radius:4px;';
         seen.textContent = `Viewed ${record.lastSeen}`;
         bar.appendChild(seen);
       }
 
       if (record.note && (isProfileBar || settings.showNotesInline)) {
         const noteBox = document.createElement('div');
-        noteBox.style.cssText = 'width:100%;margin-top:4px;padding:5px 9px;background:#16161a;border-left:2px solid #eab308;color:#e4e4e7;font-size:12px;white-space:pre-wrap;border-radius:4px;';
+        noteBox.style.cssText = 'width:100%;flex:0 0 100%;margin-top:3px;padding:4px 8px;background:#16161a;border-left:2px solid #eab308;color:#e4e4e7;font-size:11px;white-space:pre-wrap;border-radius:4px;box-sizing:border-box;';
         noteBox.textContent = record.note;
         bar.appendChild(noteBox);
       }
@@ -1818,14 +1859,14 @@
 
     if (demos?.relationships) {
       const relPill = document.createElement('span');
-      relPill.style.cssText = 'font-size:11px;color:#d8b4fe;background:rgba(168,85,247,0.12);border:1px solid rgba(168,85,247,0.28);padding:1px 6px;border-radius:4px;';
+      relPill.style.cssText = 'font-size:10px;color:#d8b4fe;background:rgba(168,85,247,0.12);border:1px solid rgba(168,85,247,0.28);padding:1px 5px;border-radius:4px;';
       relPill.textContent = demos.relationships;
       toolbar.appendChild(relPill);
     }
 
     if (cachedBio) {
       const bioBadge = document.createElement('span');
-      bioBadge.style.cssText = 'font-size:10px;color:#9ca3af;padding:1px 6px;border:1px solid #333;border-radius:4px;';
+      bioBadge.style.cssText = 'font-size:10px;color:#9ca3af;padding:1px 5px;border:1px solid #333;border-radius:4px;';
       const hasFetishes = Boolean((cachedBio.fetishesInto && cachedBio.fetishesInto.length > 0) || (cachedBio.fetishesLimits && cachedBio.fetishesLimits.length > 0));
       bioBadge.title = cachedBio.hasAbout
         ? `Locally cached profile — About (${cachedBio.aboutText.length} chars)${hasFetishes ? ' + Fetishes' : ''}`
@@ -1836,35 +1877,35 @@
 
     if (genderRejected) {
       const b = document.createElement('span');
-      b.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
+      b.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
       b.textContent = `-Gender${demos?.gender ? ` (${demos.gender})` : ''}`;
       toolbar.appendChild(b);
     }
 
     if (missingAbout) {
       const b = document.createElement('span');
-      b.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
+      b.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
       b.textContent = '-No About';
       toolbar.appendChild(b);
     }
 
     if (ageRejected) {
       const b = document.createElement('span');
-      b.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
+      b.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
       b.textContent = `-Age (${demos.age})`;
       toolbar.appendChild(b);
     }
 
     ruleHits.forEach((hit) => {
       const badge = document.createElement('span');
-      badge.style.cssText = `font-size:11px;padding:1px 6px;border-radius:4px;background:${hexToRgba(hit.color, 0.18)};color:${hit.color};border:1px solid ${hexToRgba(hit.color, 0.7)};font-weight:500;`;
+      badge.style.cssText = `font-size:10px;padding:1px 5px;border-radius:4px;background:${hexToRgba(hit.color, 0.18)};color:${hit.color};border:1px solid ${hexToRgba(hit.color, 0.7)};font-weight:500;`;
       badge.textContent = `${hit.label}: ${hit.keyword}${hit.fromCache ? ' (cached)' : ''}`;
       toolbar.appendChild(badge);
     });
 
     limitConflicts.forEach((conf) => {
       const badge = document.createElement('span');
-      badge.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:4px;background:rgba(245,158,11,0.18);color:#fcd34d;border:1px solid #d97706;font-weight:500;';
+      badge.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(245,158,11,0.18);color:#fcd34d;border:1px solid #d97706;font-weight:500;';
       badge.title = `Listed under Fetishes: Limits (${conf.label})`;
       badge.textContent = `⚠ Limit: ${conf.keyword}`;
       toolbar.appendChild(badge);
@@ -1872,7 +1913,7 @@
 
     excludedHits.forEach((kw) => {
       const badge = document.createElement('span');
-      badge.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
+      badge.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
       badge.title = 'Red kink found in Fetishes (Into) list';
       badge.textContent = `-${kw}`;
       toolbar.appendChild(badge);
@@ -1919,7 +1960,7 @@
       const handle = target.dataset.flxHandle || target.dataset.flxUser || 'profile';
       const kb = Store.getSettings().keybinds;
       this.showToast(
-        `Card ${clamped + 1}/${cards.length}: /${handle}  •  [${kb.toggleMinimal.toUpperCase()}] View  [${kb.shortlist.toUpperCase()}] Shortlist  [${kb.cycleGender.toUpperCase()}] Gender  [${kb.pass.toUpperCase()}] Pass  [${kb.openTab.toUpperCase()}] Open`
+        `Card ${clamped + 1}/${cards.length}: /${handle}  •  [${kb.toggleMinimal.toUpperCase()}] Overlay  [${kb.shortlist.toUpperCase()}] Shortlist  [${kb.cycleGender.toUpperCase()}] Gender  [${kb.pass.toUpperCase()}] Pass  [${kb.openTab.toUpperCase()}] Open`
       );
       return target;
     },
@@ -1958,7 +1999,7 @@
         cardViewOverrides.set(userKey, nextMode);
         runAll();
         this.focusCard(this.activeIndex);
-        this.showToast(`/${handle} → ${nextMode === 'minimal' ? 'Minimal strip' : 'Full view'}`);
+        this.showToast(`/${handle} overlay → ${nextMode === 'minimal' ? 'Minimal' : 'Full'}`);
         return;
       }
 
@@ -2043,6 +2084,8 @@
   // 9. PAGE ENHANCERS: CARDS/POSTS, STICKY PROFILE BAR & CHAT CONTEXT STRIP
   // =========================================================================
   function applyContainerState(container, identity, settings, force = false) {
+    if (containsEditableComposer(container)) return;
+
     const userKey = identity.key;
     const record = Store.getUser(userKey);
     const cachedBio = Store.getCachedBio(userKey, settings.bioCacheTtlDays);
@@ -2078,7 +2121,6 @@
     }
     const itemText = container.dataset.flxRawItemText;
 
-    // Red kinks / excludes ONLY check the Fetishes (Into) list—never About/profile/post text
     const fetishIntoText = getFetishIntoSearchText(cachedBio);
     const excludedHits = findSimpleMatches(fetishIntoText, settings.excludeKeywords);
     const ruleHits = findRuleMatches(itemText, bioText, settings.highlightRules);
@@ -2122,14 +2164,11 @@
     const isFilteredOut = record.status === 'hidden' || excludedHits.length > 0 || missingAbout || ageRejected || genderRejected;
     applyCardAccentStyle(container, record.status, ruleHits, isFilteredOut, settings);
 
-    setContainerNativeContentHidden(container, effectiveViewMode === 'minimal');
-
     const oldBar = container.querySelector('.flx-toolbar');
     if (oldBar) oldBar.remove();
 
     if (effectiveViewMode !== 'off') {
-      const pos = settings.cardToolbarPosition || 'top-sticky';
-      const isStickyTop = pos === 'top-sticky' && effectiveViewMode === 'full';
+      const isInlineRow = isInlineFlexRowItem(container);
 
       const toolbar = buildToolbar(
         userKey,
@@ -2138,12 +2177,12 @@
           withObserverPaused(() => applyContainerState(container, identity, Store.getSettings(), true));
         },
         {
-          viewMode: effectiveViewMode,
+          viewMode: isInlineRow ? 'minimal' : effectiveViewMode,
           isProfileBar: false,
           displayHandle: identity.username,
           profileUrl: identity.profileUrl,
           demos: mergedDemos,
-          isStickyTop,
+          isInlineRow,
           onToggleCardView: () => {
             const nextOverride = effectiveViewMode === 'minimal' ? 'full' : 'minimal';
             cardViewOverrides.set(userKey, nextOverride);
@@ -2162,14 +2201,11 @@
         ruleHits,
         limitConflicts,
         excludedHits,
-        effectiveViewMode
+        isInlineRow ? 'minimal' : effectiveViewMode
       );
 
-      if (pos === 'bottom' && effectiveViewMode === 'full') {
-        container.appendChild(toolbar);
-      } else {
-        container.insertBefore(toolbar, container.firstChild);
-      }
+      // Always append at the bottom of the card/row so we NEVER push top headers or content down
+      container.appendChild(toolbar);
     }
   }
 
@@ -2178,21 +2214,26 @@
     const root = document.getElementById('main-content') || document.body;
     const currentProfile = detectCurrentProfilePage();
     const currentProfileKey = currentProfile ? currentProfile.key : null;
+    const { selfId, selfUsername } = getSelfIdentity();
 
     const links = root.getElementsByTagName('a');
     const seenContainers = new Set();
 
     for (const link of links) {
-      if (link.closest('nav, header, footer, aside, .flx-toolbar, .flx-profile-bar, .flx-chat-context')) continue;
+      if (link.closest('nav, header, footer, aside, form, dialog, #feed-status-form, .flx-toolbar, .flx-profile-bar, .flx-chat-context')) continue;
       const parsed = parseUserHref(link.getAttribute('href'));
       if (!parsed || parsed.key === currentProfileKey) continue;
+      if (selfUsername && parsed.key === selfUsername) continue;
+      if (selfId && parsed.key === `users/${selfId}`) continue;
 
       const container = findPostOrCardContainer(link, root);
       if (!container || seenContainers.has(container)) continue;
-      seenContainers.add(container);
-      container.dataset.flxLinkHref = link.getAttribute('href') || '';
 
       const identity = resolveAuthorFromPostOrCard(container, link, parsed);
+      if (selfUsername && identity.key === selfUsername) continue;
+
+      seenContainers.add(container);
+      container.dataset.flxLinkHref = link.getAttribute('href') || '';
       applyContainerState(container, identity, settings, false);
     }
 
@@ -2295,8 +2336,8 @@
       wrapper.dataset.flxProfile = currentKey;
       wrapper.dataset.flxSig = sig;
       wrapper.style.cssText = isSticky
-        ? 'max-width:1280px;margin:8px auto 0;padding:9px 14px;background:rgba(18,18,22,0.96);backdrop-filter:blur(10px);border:1px solid #383842;border-radius:8px;display:flex;flex-wrap:wrap;align-items:center;gap:8px;position:sticky;top:var(--flx-sticky-top, 62px);z-index:90;box-sizing:border-box;box-shadow:0 6px 22px rgba(0,0,0,0.65);'
-        : 'max-width:1280px;margin:10px auto 0;padding:10px 14px;background:rgba(22,22,26,0.95);backdrop-filter:blur(8px);border:1px solid #33333a;border-radius:8px;display:flex;flex-wrap:wrap;align-items:center;gap:8px;position:relative;z-index:10;box-sizing:border-box;box-shadow:0 4px 16px rgba(0,0,0,0.45);';
+        ? 'width:100%;max-width:1280px;margin:8px auto 0;padding:9px 14px;background:rgba(18,18,22,0.96);backdrop-filter:blur(10px);border:1px solid #383842;border-radius:8px;display:flex;flex-wrap:wrap;align-items:center;gap:8px;position:sticky;top:var(--flx-sticky-top, 62px);z-index:90;box-sizing:border-box;box-shadow:0 6px 22px rgba(0,0,0,0.65);'
+        : 'width:100%;max-width:1280px;margin:10px auto 0;padding:10px 14px;background:rgba(22,22,26,0.95);backdrop-filter:blur(8px);border:1px solid #33333a;border-radius:8px;display:flex;flex-wrap:wrap;align-items:center;gap:8px;position:relative;z-index:10;box-sizing:border-box;box-shadow:0 4px 16px rgba(0,0,0,0.45);';
 
       const label = document.createElement('strong');
       label.style.cssText = 'font-size:12px;color:#f4f4f5;font-family:system-ui,sans-serif;';
@@ -2312,12 +2353,9 @@
           displayHandle: profilePage.username,
           profileUrl: profilePage.url,
           demos,
-          isStickyTop: false
+          isInlineRow: false
         }
       );
-      toolbar.style.marginTop = '0';
-      toolbar.style.marginBottom = '0';
-      toolbar.style.flex = '1';
 
       const scanText = latestBio ? latestBio.text : '';
       const fetishIntoText = getFetishIntoSearchText(latestBio);
@@ -2403,7 +2441,7 @@
       let partner = null;
 
       for (const a of anchors) {
-        if (a.closest('.flx-chat-context, .flx-toolbar')) continue;
+        if (a.closest('.flx-chat-context, .flx-toolbar, form')) continue;
         const parsed = parseUserHref(a.getAttribute('href'));
         if (!parsed) continue;
         if (selfId && parsed.key === `users/${selfId}`) continue;
@@ -2449,8 +2487,8 @@
       strip.className = 'flx-chat-context';
       strip.dataset.flxSig = sig;
       strip.style.cssText = target.mode === 'dock'
-        ? 'margin:6px 8px;padding:7px 9px;background:#16161a;border:1px solid #383842;border-radius:6px;font-size:11px;color:#e4e4e7;font-family:system-ui,sans-serif;display:flex;flex-direction:column;gap:5px;z-index:20;position:relative;'
-        : 'max-width:960px;margin:8px auto;padding:9px 12px;background:#16161a;border:1px solid #383842;border-radius:8px;font-size:12px;color:#e4e4e7;font-family:system-ui,sans-serif;display:flex;flex-direction:column;gap:6px;z-index:20;position:sticky;top:var(--flx-sticky-top, 62px);';
+        ? 'width:100%;box-sizing:border-box;margin:6px 0;padding:7px 9px;background:#16161a;border:1px solid #383842;border-radius:6px;font-size:11px;color:#e4e4e7;font-family:system-ui,sans-serif;display:flex;flex-direction:column;gap:5px;z-index:20;position:relative;flex-shrink:0;'
+        : 'width:100%;max-width:960px;box-sizing:border-box;margin:8px auto;padding:9px 12px;background:#16161a;border:1px solid #383842;border-radius:8px;font-size:12px;color:#e4e4e7;font-family:system-ui,sans-serif;display:flex;flex-direction:column;gap:6px;z-index:20;position:sticky;top:var(--flx-sticky-top, 62px);flex-shrink:0;';
 
       if (ruleHits.length > 0) {
         strip.style.borderLeft = `3px solid ${ruleHits[0].color}`;
@@ -2459,7 +2497,7 @@
       }
 
       const topRow = document.createElement('div');
-      topRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;';
+      topRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;width:100%;';
 
       const left = document.createElement('div');
       left.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
@@ -2572,7 +2610,7 @@
 
       if (ruleHits.length > 0 || limitConflicts.length > 0 || excludedHits.length > 0 || sharedGroups.length > 0) {
         const badgeRow = document.createElement('div');
-        badgeRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;';
+        badgeRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;width:100%;';
         for (const g of sharedGroups.slice(0, 3)) {
           const p = document.createElement('span');
           p.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:3px;background:rgba(52,211,153,0.14);color:#6ee7b7;border:1px solid rgba(52,211,153,0.4);';
@@ -2603,14 +2641,14 @@
 
       if (record.note) {
         const noteLine = document.createElement('div');
-        noteLine.style.cssText = 'padding:3px 7px;background:#1e1e24;border-left:2px solid #eab308;color:#fef08a;border-radius:3px;white-space:pre-wrap;';
+        noteLine.style.cssText = 'padding:3px 7px;background:#1e1e24;border-left:2px solid #eab308;color:#fef08a;border-radius:3px;white-space:pre-wrap;width:100%;box-sizing:border-box;';
         noteLine.textContent = record.note;
         strip.appendChild(noteLine);
       }
 
       if (cachedBio && cachedBio.aboutText) {
         const excerpt = document.createElement('div');
-        excerpt.style.cssText = 'color:#a1a1aa;font-size:11px;line-height:1.35;';
+        excerpt.style.cssText = 'color:#a1a1aa;font-size:11px;line-height:1.35;width:100%;';
         excerpt.textContent = `About: ${cachedBio.aboutText.slice(0, 180)}${cachedBio.aboutText.length > 180 ? '…' : ''}`;
         strip.appendChild(excerpt);
       }
@@ -2633,7 +2671,7 @@
     isOpen: false,
     filterStatus: 'all',
     filterCategory: 'all',
-    filterGender: 'all', // 'all' | 'female' | 'male' | 'other' | 'unknown'
+    filterGender: 'all',
     filterRel: 'all',
     hideExcludes: false,
     localOnly: false,
@@ -2930,7 +2968,7 @@
             .gender-seg button.g-male { background: rgba(59,130,246,0.22); color: #93c5fd; font-weight: 600; }
             .gender-seg button.g-other { background: rgba(168,85,247,0.22); color: #d8b4fe; font-weight: 600; }
             .gender-seg button.g-auto { background: #2c2c36; color: #e4e4e7; font-weight: 600; }
-            .note-row { display: flex; gap: 8px; align-items: flex-start; }
+            .note-row { display: flex; gap: 8px; align-items: flex-start; width: 100%; }
             .note-area {
               flex: 1; min-height: 44px; resize: vertical; line-height: 1.45;
               background: #131317; border-color: #32323c;
@@ -3578,7 +3616,7 @@
   };
 
   // =========================================================================
-  // 11. SHADOW DOM FLOATING HUD (WITH QUICK CARD VIEW CYCLE BUTTON)
+  // 11. SHADOW DOM FLOATING HUD (WITH QUICK OVERLAY VIEW CYCLE BUTTON)
   // =========================================================================
   const Hud = {
     shadow: null,
@@ -3628,7 +3666,7 @@
         if (viewSel) viewSel.value = next;
       }
       runAll();
-      CardNavigator.showToast(`Cards → ${VIEW_MODE_LABELS[next] || next}`);
+      CardNavigator.showToast(`Overlay → ${VIEW_MODE_LABELS[next] || next}`);
     },
 
     init() {
@@ -3710,7 +3748,7 @@
           <div class="row">
             <button type="button" id="btn-toggle">FL (<span id="card-count">0</span>) ▲</button>
             <button type="button" class="star" id="btn-crm">CRM</button>
-            <button type="button" id="btn-view-mode" title="Cycle card view: Full / Compact / Minimal (V)">View: Full</button>
+            <button type="button" id="btn-view-mode" title="Cycle overlay view: Full / Compact / Minimal (V)">View: Full</button>
             <button type="button" id="btn-hidden"></button>
             <button type="button" id="btn-pause"></button>
             <span class="scan-pill" id="cache-status">Cached: 0</span>
@@ -3726,31 +3764,22 @@
                     <option value="top-left">Top Left</option>
                   </select>
                 </label>
-                <label>Card View Mode
+                <label>Overlay View Mode
                   <select id="in-view-mode">
-                    <option value="full">Full Card + Pills</option>
-                    <option value="compact">Compact (Dots Only)</option>
-                    <option value="minimal">Minimal Strip (Dots Only)</option>
-                    <option value="off">Hidden Toolbars</option>
+                    <option value="full">Full Overlay + Pills</option>
+                    <option value="compact">Compact Overlay (Dots)</option>
+                    <option value="minimal">Minimal Strip (Dots)</option>
+                    <option value="off">Hidden Overlays</option>
                   </select>
                 </label>
               </div>
               <div class="grid2">
-                <label>Full Toolbar Placement
-                  <select id="in-toolbar-pos">
-                    <option value="top-sticky">Top of Card (Sticky)</option>
-                    <option value="top">Top of Card</option>
-                    <option value="bottom">Bottom of Card</option>
-                  </select>
-                </label>
                 <label>Filter Action
                   <select id="in-mode">
                     <option value="dim">Dim Card</option>
                     <option value="collapse">Collapse Card</option>
                   </select>
                 </label>
-              </div>
-              <div class="grid2">
                 <label>Gender Filter
                   <select id="in-gender-filter">
                     <option value="all">All Genders (No Filter)</option>
@@ -3759,10 +3788,10 @@
                     <option value="other">⚧ NB / Trans / Other</option>
                   </select>
                 </label>
-                <label>Dim Opacity (<span id="opacity-val">18%</span>)
-                  <input type="range" id="in-opacity" min="0.05" max="0.75" step="0.05">
-                </label>
               </div>
+              <label>Dim Opacity (<span id="opacity-val">18%</span>)
+                <input type="range" id="in-opacity" min="0.05" max="0.75" step="0.05">
+              </label>
               <div class="grid3">
                 <label class="inline-label" style="padding-bottom:4px;">
                   <input type="checkbox" id="in-age-filter"> Age Window
@@ -3980,7 +4009,6 @@
 
         $('in-pos').value = s.hudPosition;
         $('in-view-mode').value = s.cardViewMode || 'full';
-        $('in-toolbar-pos').value = s.cardToolbarPosition || 'top-sticky';
         $('in-mode').value = s.hideMode;
         $('in-gender-filter').value = s.genderFilter || 'all';
         $('in-opacity').value = s.dimOpacity;
@@ -4106,7 +4134,7 @@
         const next = Store.saveSettings({
           hudPosition: $('in-pos').value,
           cardViewMode: $('in-view-mode').value,
-          cardToolbarPosition: $('in-toolbar-pos').value,
+          cardToolbarPosition: 'bottom',
           hideMode: $('in-mode').value,
           genderFilter: $('in-gender-filter').value,
           dimOpacity: parseFloat($('in-opacity').value) || 0.18,
@@ -4128,7 +4156,7 @@
         Array.from(document.getElementsByClassName('flx-profile-bar')).forEach(el => el.remove());
         runAll();
         refreshStorageLabel();
-        $('hud-status').textContent = '✓ Saved UI, card view mode, filters & keybinds';
+        $('hud-status').textContent = '✓ Saved UI, overlay mode, filters & keybinds';
         setTimeout(() => { $('hud-status').textContent = ''; }, 2500);
       });
 
@@ -4188,7 +4216,7 @@
       if (this.viewModeBtn) {
         this.viewModeBtn.className = mode === 'minimal' ? 'sky' : (mode === 'compact' ? 'star' : '');
         this.viewModeBtn.textContent = VIEW_MODE_LABELS[mode] || 'View: Full';
-        this.viewModeBtn.title = `Cycle global card view (${s.keybinds?.cycleView || 'v'})`;
+        this.viewModeBtn.title = `Cycle global overlay view (${s.keybinds?.cycleView || 'v'})`;
       }
 
       this.showHiddenBtn.className = s.showHidden ? 'star' : '';
