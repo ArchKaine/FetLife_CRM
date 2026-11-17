@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         FetLife Local Cache Filter & CRM
 // @namespace    local.fl.enhancer
-// @version      1.11.5
-// @description  Zero-fetch passive profile & fetish caching, Fetishes-only red-kink exclusions, toggleable Minimal/Compact/Full overlay modes, sticky profile controls, gender/age filtering, and searchable CRM modal
+// @version      1.12.2
+// @description  Zero-fetch passive profile & fetish caching, main-profile/About Limits extraction, self-profile kink/limit auto-sync, scoped sub-profile card differentiation, accurate age/gender filtering, and searchable CRM modal
 // @match        https://fetlife.com/*
 // @match        https://*.fetlife.com/*
 // @grant        GM_getValue
@@ -160,10 +160,11 @@
     filterByAge: false,
     minAge: 30,
     maxAge: 45,
+    autoSyncSelfKinks: true,          // Auto-sync own Fetishes (Into -> Shared Kink, Profile Limits -> Excludes)
     paused: false,
     hudPosition: 'bottom-right',      // 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left'
     cardViewMode: 'full',             // 'full' | 'compact' | 'minimal' | 'off'
-    cardToolbarPosition: 'bottom',    // 'bottom' | 'top' | 'top-sticky'
+    cardToolbarPosition: 'bottom',
     stickyProfileBar: true,
     showNotesInline: true,
     bioCacheTtlDays: 14
@@ -193,10 +194,32 @@
 
   const USERNAME_RE = /^[a-zA-Z0-9_.-]{2,36}$/;
 
-  const HEADLINE_DEMO_RE = /^([1-9]\d)\s*(Cis\s*Female|Cis\s*Woman|Cis\s*Male|Cis\s*Man|Trans\s*Woman|Trans\s*Female|Trans\s*Man|Trans\s*Male|Non-binary|Nonbinary|Genderfluid|Genderqueer|Crossdresser|Transvestite|Intersex|Agender|Female|Woman|Male|Man|MtF|FtM|NB|GF|GQ|IS|AG|TG|TS|CD|TV|M|F)(?:\s+([A-Za-z][A-Za-z /-]{1,32}))?$/i;
+  const GENDER_TOKEN_PATTERN = [
+    'Cisgender\\s*Female', 'Cisgender\\s*Woman', 'Cisgender\\s*Male', 'Cisgender\\s*Man',
+    'Cis\\s*Female', 'Cis\\s*Woman', 'Cis\\s*Male', 'Cis\\s*Man', 'Cis\\s*F', 'Cis\\s*M',
+    'Trans\\s*Female', 'Trans\\s*Woman', 'Trans\\s*Male', 'Trans\\s*Man',
+    'Transfeminine', 'Transmasculine', 'Transgender', 'Transsexual',
+    'Non-?binary', 'Genderfluid', 'Genderqueer', 'Crossdresser', 'Transvestite',
+    'Two-?Spirit', 'Intersex', 'Agender', 'Demigirl', 'Demiboy', 'Bigender',
+    'Pangender', 'Genderflux', 'Questioning', 'Butch', 'Femme', 'Androgyne',
+    'Female', 'Woman', 'Male', 'Man',
+    'MtF', 'FtM', 'MTF', 'FTM', 'AFAB', 'AMAB',
+    'NB', 'GF', 'GQ', 'IS', 'AG', 'TG', 'TS', 'CD', 'TV', '2S', 'GN', 'Q',
+    'W', 'F', 'M'
+  ].join('|');
 
-  const OTHER_GENDER_RE = /\b(nb|non-?binary|mtf|ftm|trans\s*woman|trans\s*female|trans\s*man|trans\s*male|transgender|transsexual|gf|genderfluid|gq|genderqueer|ag|agender|is|intersex|cd|crossdresser|tv|transvestite|two-?spirit|amab|afab)\b/i;
-  const FEMALE_GENDER_RE = /^(f|female|cis\s*f|cis\s*female|cisgender\s*female|woman|cis\s*woman|cisgender\s*woman)$/i;
+  const DEMO_BADGE_START_RE = new RegExp(
+    `^\\s*([1-9]\\d)\\s*(${GENDER_TOKEN_PATTERN})(?![a-zA-Z0-9_])(?:\\s+([^·•|\\r\\n]{1,48}))?\\s*$`,
+    'i'
+  );
+
+  const DEMO_INLINE_SCAN_RE = new RegExp(
+    `(?:^|[\\s·•|(])([1-9]\\d)\\s*(${GENDER_TOKEN_PATTERN})(?![a-zA-Z0-9_])(?:[ \\t]+([A-Za-z0-9][A-Za-z0-9 /&'’-]{0,38}))?`,
+    'i'
+  );
+
+  const OTHER_GENDER_RE = /\b(nb|non-?binary|mtf|ftm|trans\s*woman|trans\s*female|trans\s*man|trans\s*male|transfeminine|transmasculine|transgender|transsexual|gf|genderfluid|gq|genderqueer|ag|agender|is|intersex|cd|crossdresser|tv|transvestite|two-?spirit|2s|demigirl|demiboy|bigender|pangender|genderflux|androgyne|gn|amab|afab)\b/i;
+  const FEMALE_GENDER_RE = /^(f|w|female|cis\s*f|cis\s*female|cisgender\s*female|woman|cis\s*woman|cisgender\s*woman|femme)$/i;
   const MALE_GENDER_RE = /^(m|male|cis\s*m|cis\s*male|cisgender\s*male|man|cis\s*man|cisgender\s*man)$/i;
 
   const cardViewOverrides = new Map();
@@ -238,8 +261,42 @@
   window.addEventListener('resize', scheduleStickySync, { passive: true });
 
   // =========================================================================
-  // 3. GENDER CLASSIFICATION, KEYBIND HELPERS & PERSISTENT STORAGE
+  // 3. GENDER & AGE CLASSIFICATION, KEYBIND HELPERS & PERSISTENT STORAGE
   // =========================================================================
+  function normalizeValidAge(val) {
+    if (val === null || val === undefined || val === '') return null;
+    const n = typeof val === 'number' ? Math.floor(val) : parseInt(String(val).trim(), 10);
+    if (Number.isNaN(n) || n < 18 || n > 99) return null;
+    return n;
+  }
+
+  function extractAgeFromRoleString(roleStr) {
+    if (!roleStr || typeof roleStr !== 'string') return null;
+    const m = roleStr.trim().match(DEMO_BADGE_START_RE) || roleStr.trim().match(DEMO_INLINE_SCAN_RE);
+    return m ? normalizeValidAge(m[1]) : null;
+  }
+
+  function resolveEffectiveAge(record, cachedBio, liveDemos = null) {
+    const manualAge = normalizeValidAge(record?.manualAge);
+    if (manualAge !== null) return manualAge;
+
+    const liveAge = normalizeValidAge(liveDemos?.age);
+    if (liveAge !== null) return liveAge;
+
+    const cacheAge = normalizeValidAge(cachedBio?.age);
+    if (cacheAge !== null) return cacheAge;
+
+    const recAge = normalizeValidAge(record?.age);
+    if (recAge !== null) return recAge;
+
+    const fromRole = extractAgeFromRoleString(
+      liveDemos?.genderRole || cachedBio?.genderRole || record?.genderRole || ''
+    );
+    if (fromRole !== null) return fromRole;
+
+    return null;
+  }
+
   function classifyGenderToken(rawToken, explicitRowText = '') {
     const cleanToken = (rawToken || '').replace(/\s+/g, ' ').trim();
     const cleanRow = (explicitRowText || '').replace(/\s+/g, ' ').trim();
@@ -269,9 +326,9 @@
       return { gender: record.gender || null, genderCategory: record.genderCategory };
     }
 
-    const roleStr = liveDemos?.genderRole || record?.genderRole || cachedBio?.genderRole || '';
-    const m = roleStr.match(HEADLINE_DEMO_RE);
-    if (m) {
+    const roleStr = liveDemos?.genderRole || cachedBio?.genderRole || record?.genderRole || '';
+    const m = roleStr.match(DEMO_BADGE_START_RE) || roleStr.match(DEMO_INLINE_SCAN_RE);
+    if (m && m[2]) {
       return classifyGenderToken(m[2], liveDemos?.gender || cachedBio?.gender || '');
     }
 
@@ -279,13 +336,6 @@
     if (rawG) {
       const classified = classifyGenderToken(rawG);
       if (classified.genderCategory) return classified;
-    }
-
-    if (cachedBio?.isFemale === true || (!record?.manualGender && record?.isFemale === true)) {
-      return { gender: rawG || 'F', genderCategory: 'female' };
-    }
-    if (cachedBio?.isFemale === false || (!record?.manualGender && record?.isFemale === false)) {
-      return { gender: rawG || 'Other', genderCategory: 'other' };
     }
 
     return { gender: null, genderCategory: null };
@@ -423,6 +473,28 @@
         console.error('[FLX] Storage write failed:', e);
       }
     },
+    runOneTimeSanitization() {
+      if (this._read('fl_clean_v1120', false)) return;
+      const users = this.getAllUsers();
+      const cache = this.getBioCache();
+      let changed = false;
+      for (const [key, u] of Object.entries(users)) {
+        const c = cache[key];
+        if (!c) {
+          if (u.age !== null || u.genderRole !== null || (!u.manualGender && u.genderCategory !== null)) {
+            u.age = null;
+            u.genderRole = null;
+            if (!u.manualGender) {
+              u.gender = null;
+              u.genderCategory = null;
+            }
+            changed = true;
+          }
+        }
+      }
+      if (changed) this._write('fl_users', users);
+      this._write('fl_clean_v1120', true);
+    },
     getSettings() {
       const saved = this._read('fl_settings', {});
       const merged = Object.assign({}, DEFAULT_SETTINGS, saved);
@@ -433,6 +505,15 @@
 
       if (!saved.genderFilter && typeof saved.filterFemaleOnly === 'boolean') {
         merged.genderFilter = saved.filterFemaleOnly ? 'female' : 'all';
+      }
+
+      merged.filterByAge = Boolean(merged.filterByAge);
+      merged.minAge = normalizeValidAge(merged.minAge) ?? 30;
+      merged.maxAge = normalizeValidAge(merged.maxAge) ?? 45;
+      if (merged.minAge > merged.maxAge) {
+        const tmp = merged.minAge;
+        merged.minAge = merged.maxAge;
+        merged.maxAge = tmp;
       }
 
       if (!Array.isArray(merged.highlightRules) || merged.highlightRules.length === 0) {
@@ -474,13 +555,91 @@
         keybinds: Object.assign({}, DEFAULT_KEYBINDS)
       });
     },
+    getSelfProfile() {
+      return this._read('fl_self_profile', {
+        id: null,
+        key: null,
+        username: null,
+        fetishesInto: [],
+        fetishesLimits: [],
+        groups: [],
+        lookingFor: null,
+        syncedAt: null
+      });
+    },
+    saveSelfProfile(patch) {
+      const cur = this.getSelfProfile();
+      const next = Object.assign({}, cur, patch);
+      this._write('fl_self_profile', next);
+      if (Array.isArray(next.groups) && next.groups.length > 0) {
+        this._write('fl_self_groups', next.groups);
+      }
+      return next;
+    },
+    syncSelfKinksToRules(selfData) {
+      const intoList = Array.isArray(selfData?.fetishesInto) ? selfData.fetishesInto : [];
+      const limitsList = Array.isArray(selfData?.fetishesLimits) ? selfData.fetishesLimits : [];
+      if (intoList.length === 0 && limitsList.length === 0) return { intoAdded: 0, limitsAdded: 0 };
+
+      const settings = this.getSettings();
+      const rules = Array.isArray(settings.highlightRules) ? [...settings.highlightRules] : [];
+
+      let intoAdded = 0;
+      if (intoList.length > 0) {
+        const cleanKinks = Array.from(new Set(
+          intoList
+            .map(k => (k || '').trim())
+            .filter(k => k.length >= 3 && k.length <= 48)
+        ));
+        if (cleanKinks.length > 0) {
+          const existingRuleIdx = rules.findIndex(r => r.id === 'self_kinks');
+          const selfRule = {
+            id: 'self_kinks',
+            label: 'Shared Kink',
+            color: '#ec4899',
+            keywords: cleanKinks
+          };
+          if (existingRuleIdx >= 0) {
+            rules[existingRuleIdx] = selfRule;
+          } else {
+            rules.push(selfRule);
+          }
+          intoAdded = cleanKinks.length;
+        }
+      }
+
+      let limitsAdded = 0;
+      const excludeSet = new Set((settings.excludeKeywords || []).map(k => k.toLowerCase().trim()).filter(Boolean));
+      const nextExcludes = [...(settings.excludeKeywords || [])];
+      for (const lim of limitsList) {
+        const cleaned = (lim || '').trim();
+        const lower = cleaned.toLowerCase();
+        if (cleaned.length >= 3 && !excludeSet.has(lower)) {
+          excludeSet.add(lower);
+          nextExcludes.push(cleaned);
+          limitsAdded++;
+        }
+      }
+
+      this.saveSettings({
+        highlightRules: rules,
+        excludeKeywords: nextExcludes
+      });
+      this.saveSelfProfile({ syncedAt: Date.now() });
+      return { intoAdded, limitsAdded };
+    },
     getSelfGroups() {
+      const selfProf = this.getSelfProfile();
+      if (Array.isArray(selfProf.groups) && selfProf.groups.length > 0) {
+        return selfProf.groups;
+      }
       const arr = this._read('fl_self_groups', []);
       return Array.isArray(arr) ? arr : [];
     },
     setSelfGroups(groups) {
       if (Array.isArray(groups) && groups.length > 0) {
         this._write('fl_self_groups', groups);
+        this.saveSelfProfile({ groups });
       }
     },
     getAllUsers() {
@@ -495,6 +654,7 @@
         lastContacted: null,
         username: null,
         age: null,
+        manualAge: null,
         gender: null,
         genderCategory: null,
         manualGender: null,
@@ -509,6 +669,18 @@
       const db = this.getAllUsers();
       const prev = this.getUser(key);
       const next = Object.assign({}, prev, patch);
+
+      if (Object.prototype.hasOwnProperty.call(patch, 'manualAge')) {
+        next.manualAge = normalizeValidAge(patch.manualAge);
+        if (next.manualAge !== null) {
+          next.age = next.manualAge;
+        }
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'age')) {
+        next.age = next.manualAge ?? normalizeValidAge(patch.age);
+      } else {
+        next.age = next.manualAge ?? normalizeValidAge(next.age);
+      }
 
       if (
         patch.status &&
@@ -595,7 +767,7 @@
         if (!isExpired) continue;
 
         const u = users[key];
-        const isTracked = Boolean(u && (u.status || u.manualGender || (u.note && u.note.trim().length > 0)));
+        const isTracked = Boolean(u && (u.status || u.manualGender || u.manualAge || (u.note && u.note.trim().length > 0)));
         if (isTracked) {
           retainedTracked++;
         } else {
@@ -613,7 +785,7 @@
       if (!entry || typeof entry.text !== 'string') return null;
 
       const u = this.getUser(key);
-      const isTracked = Boolean(u.status || u.manualGender || (u.note && u.note.trim().length > 0));
+      const isTracked = Boolean(u.status || u.manualGender || u.manualAge || (u.note && u.note.trim().length > 0));
       if (!isTracked) {
         const maxAgeMs = Math.max(1, Number(ttlDays) || 14) * 86400000;
         if (Date.now() - (entry.fetchedAt || 0) > maxAgeMs) return null;
@@ -667,6 +839,7 @@
 
       const combinedPositiveText = Array.from(new Set(positiveParts)).join(' \n ').slice(0, 24000);
       const nextGenderCategory = incoming.genderCategory || prev.genderCategory || null;
+      const resolvedAge = normalizeValidAge(incoming.age) ?? normalizeValidAge(prev.age) ?? null;
 
       const nextEntry = {
         username: username || prev.username || null,
@@ -677,7 +850,7 @@
         fetishesLimits: nextLimits,
         limitsText: limitsText.slice(0, 4000),
         sections: nextSections,
-        age: incoming.age ?? prev.age ?? null,
+        age: resolvedAge,
         gender: incoming.gender || prev.gender || null,
         genderCategory: nextGenderCategory,
         genderRole: incoming.genderRole || prev.genderRole || null,
@@ -694,7 +867,7 @@
       const u = this.getUser(key);
       const userPatch = {
         username: username || u.username || null,
-        age: nextEntry.age ?? u.age ?? null,
+        age: u.manualAge ?? resolvedAge ?? normalizeValidAge(u.age) ?? null,
         genderRole: nextEntry.genderRole || u.genderRole || null,
         location: nextEntry.location || u.location || null,
         relationships: nextEntry.relationships || u.relationships || null,
@@ -718,7 +891,8 @@
         settings: this.getSettings(),
         users: this.getAllUsers(),
         bioCache: this.getBioCache(),
-        selfGroups: this.getSelfGroups()
+        selfGroups: this.getSelfGroups(),
+        selfProfile: this.getSelfProfile()
       }, null, 2);
     },
     importAll(jsonText) {
@@ -727,11 +901,12 @@
       if (parsed.users) this._write('fl_users', parsed.users);
       if (parsed.bioCache) this._write('fl_bio_cache', parsed.bioCache);
       if (Array.isArray(parsed.selfGroups)) this._write('fl_self_groups', parsed.selfGroups);
+      if (parsed.selfProfile) this._write('fl_self_profile', parsed.selfProfile);
     }
   };
 
   // =========================================================================
-  // 4. COLOR, URL, DEMOGRAPHIC, GROUPS & FETLIFE DOM PARSERS
+  // 4. SELF-IDENTITY DETECTOR, SCOPED DEMOGRAPHIC PARSER & DOM HELPERS
   // =========================================================================
   function hexToRgba(hex, alpha) {
     const clean = (hex || '#38bdf8').replace('#', '').trim();
@@ -768,34 +943,6 @@
       }
     }
     return null;
-  }
-
-  function getSelfIdentity() {
-    const flUser = window.FL && window.FL.user;
-    const selfId = flUser && flUser.id ? String(flUser.id) : null;
-    let selfUsername = null;
-
-    // Also check status composer link (e.g., <a href="/Kuojin" title="Go to your profile">)
-    const composerLink = document.querySelector('#feed-status-form a[href^="/"]');
-    if (composerLink) {
-      const p = parseUserHref(composerLink.getAttribute('href'));
-      if (p && p.username) selfUsername = p.key;
-    }
-
-    if (!selfUsername) {
-      const sidebar = document.getElementById('account-sidebar');
-      if (sidebar) {
-        const anchors = sidebar.getElementsByTagName('a');
-        for (const a of anchors) {
-          const parsed = parseUserHref(a.getAttribute('href'));
-          if (parsed && parsed.username) {
-            selfUsername = parsed.key;
-            break;
-          }
-        }
-      }
-    }
-    return { selfId, selfUsername };
   }
 
   function parseUserHref(href) {
@@ -846,18 +993,123 @@
     }
   }
 
+  function getSelfIdentity() {
+    const storedSelf = Store.getSelfProfile();
+    const flUser = window.FL && window.FL.user;
+    const bodyAccountId = document.body?.dataset?.displayTimeZoneAccountIdValue;
+    const selfId = (flUser && flUser.id ? String(flUser.id) : null) || bodyAccountId || storedSelf.id || null;
+
+    let selfUsername = storedSelf.key || null;
+    let displayUsername = storedSelf.username || null;
+
+    const composerLink = document.querySelector('#feed-status-form a[href^="/"]');
+    if (composerLink) {
+      const p = parseUserHref(composerLink.getAttribute('href'));
+      if (p && p.username) {
+        selfUsername = p.key;
+        displayUsername = p.username;
+      }
+    }
+
+    if (!selfUsername && selfId) {
+      const ownArticle = document.querySelector(`article[data-story-actor-id="${selfId}"][data-dwell-author-path]`);
+      if (ownArticle) {
+        const p = parseUserHref(ownArticle.dataset.dwellAuthorPath);
+        if (p && p.username) {
+          selfUsername = p.key;
+          displayUsername = p.username;
+        }
+      }
+    }
+
+    if (!selfUsername) {
+      const sidebar = document.getElementById('account-sidebar');
+      if (sidebar) {
+        const anchors = sidebar.getElementsByTagName('a');
+        for (const a of anchors) {
+          const parsed = parseUserHref(a.getAttribute('href'));
+          if (parsed && parsed.username) {
+            selfUsername = parsed.key;
+            displayUsername = parsed.username;
+            break;
+          }
+        }
+      }
+    }
+
+    if ((selfId && selfId !== storedSelf.id) || (selfUsername && selfUsername !== storedSelf.key)) {
+      Store.saveSelfProfile({
+        id: selfId,
+        key: selfUsername,
+        username: displayUsername || selfUsername
+      });
+    }
+
+    return { selfId, selfUsername, displayUsername };
+  }
+
+  function isCurrentProfileSelf(profilePage) {
+    if (!profilePage) return false;
+    const { selfId, selfUsername } = getSelfIdentity();
+    if (selfUsername && profilePage.key === selfUsername) return true;
+    if (selfId && profilePage.key === `users/${selfId}`) return true;
+
+    const profileHeader = findProfileHeaderElement();
+    if (profileHeader) {
+      const links = profileHeader.getElementsByTagName('a');
+      for (const a of links) {
+        const href = (a.getAttribute('href') || '').trim();
+        const text = (a.textContent || '').replace(/\s+/g, ' ').trim();
+        if (href === '/settings/profile' || /^edit\s+profile$/i.test(text)) {
+          Store.saveSelfProfile({
+            key: profilePage.key,
+            username: profilePage.username || profilePage.key
+          });
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  function isLikelyDemoBadgeString(str) {
+    if (!str) return false;
+    if (/^\d+\s*(s|m|h|d|w|mo|y|sec|min|hr|day|wk|yr|going|interested|loves?|comments?|friends?|followers?|pictures?|videos?|writings?)\b/i.test(str)) {
+      return false;
+    }
+    return true;
+  }
+
   function parseDemographicsFromContainer(container) {
     let age = null;
     let rawGenderToken = null;
     let genderRole = null;
     let explicitGenderRow = '';
+    let explicitAgeRow = null;
     let relationships = null;
     let lookingFor = null;
     const locationParts = [];
 
-    const anchors = container.getElementsByTagName('a');
+    const isArticle = container.tagName === 'ARTICLE';
+    const scanRoot = (isArticle && container.querySelector('header'))
+      ? container.querySelector('header')
+      : container;
+
+    const isInsideExcludedSubtree = (node) => {
+      const el = node.nodeType === 1 ? node : node.parentElement;
+      if (!el) return true;
+      if (el.closest('.flx-toolbar, .flx-profile-bar, .flx-chat-context, script, style, time, blockquote, pre, code')) {
+        return true;
+      }
+      if (isArticle && el.closest('ul, ol, li, .story__copy, [data-controller="continue-reading"], footer')) {
+        return true;
+      }
+      return false;
+    };
+
+    const anchors = scanRoot.getElementsByTagName('a');
     for (const a of anchors) {
-      if (a.closest('.flx-toolbar, .flx-profile-bar')) continue;
+      if (isInsideExcludedSubtree(a)) continue;
       const href = a.getAttribute('href') || '';
       if (href.startsWith('/p/')) {
         const locLabel = (a.textContent || '').replace(/\s+/g, ' ').trim();
@@ -867,8 +1119,9 @@
       }
     }
 
-    const divs = container.getElementsByTagName('div');
+    const divs = scanRoot.getElementsByTagName('div');
     for (const d of divs) {
+      if (isInsideExcludedSubtree(d)) continue;
       if (d.children.length === 0 && d.nextElementSibling) {
         const label = (d.textContent || '').replace(/\s+/g, ' ').trim();
         const val = (d.nextElementSibling.textContent || '').replace(/\s+/g, ' ').trim();
@@ -876,6 +1129,8 @@
 
         if (/^gender$/i.test(label)) {
           explicitGenderRow = val;
+        } else if (/^age$/i.test(label)) {
+          explicitAgeRow = normalizeValidAge(val);
         } else if (/^relationships?$/i.test(label)) {
           relationships = val;
         } else if (/^looking\s+for$/i.test(label)) {
@@ -884,23 +1139,73 @@
       }
     }
 
-    const rawText = (container.innerText || container.textContent || '');
-    const segments = rawText
-      .split(/\r?\n|·|\|/)
-      .map(s => s.replace(/\s+/g, ' ').trim())
-      .filter(s => s.length >= 2 && s.length <= 52);
+    const candidateStrings = [];
+    const walker = document.createTreeWalker(scanRoot, NodeFilter.SHOW_TEXT, null);
+    let txtNode;
+    while ((txtNode = walker.nextNode())) {
+      if (isInsideExcludedSubtree(txtNode)) continue;
+      const parentEl = txtNode.parentElement;
+      if (parentEl && parentEl.closest('a[href^="/p/"]')) continue;
+      const val = (txtNode.nodeValue || '').replace(/\s+/g, ' ').trim();
+      if (val.length >= 2 && val.length <= 64) {
+        candidateStrings.push(val);
+      }
+    }
 
-    for (const seg of segments) {
-      const m = seg.match(HEADLINE_DEMO_RE);
-      if (m) {
-        const parsedAge = parseInt(m[1], 10);
-        if (parsedAge >= 18 && parsedAge <= 99) {
-          age = parsedAge;
-          rawGenderToken = m[2];
-          genderRole = seg;
-          break;
+    const spans = scanRoot.querySelectorAll('span, div, p, small');
+    for (const sp of spans) {
+      if (isInsideExcludedSubtree(sp)) continue;
+      if (sp.children.length <= 2) {
+        const spacedText = Array.from(sp.childNodes)
+          .map(n => (n.textContent || '').trim())
+          .filter(Boolean)
+          .join(' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        if (spacedText.length >= 2 && spacedText.length <= 64) {
+          candidateStrings.push(spacedText);
         }
       }
+    }
+
+    for (const rawSeg of candidateStrings) {
+      const subParts = rawSeg.split(/\r?\n|·|•|\|/).map(s => s.trim()).filter(Boolean);
+      for (const seg of subParts) {
+        if (!isLikelyDemoBadgeString(seg)) continue;
+        const m = seg.match(DEMO_BADGE_START_RE);
+        if (m) {
+          const parsedAge = normalizeValidAge(m[1]);
+          const gTok = m[2] || null;
+          if (parsedAge !== null && gTok) {
+            age = parsedAge;
+            rawGenderToken = gTok;
+            genderRole = seg;
+            break;
+          }
+        }
+      }
+      if (age !== null) break;
+    }
+
+    if (age === null) {
+      for (const rawSeg of candidateStrings) {
+        if (!isLikelyDemoBadgeString(rawSeg)) continue;
+        const m = rawSeg.match(DEMO_INLINE_SCAN_RE);
+        if (m) {
+          const parsedAge = normalizeValidAge(m[1]);
+          if (parsedAge !== null && m[2]) {
+            age = parsedAge;
+            rawGenderToken = m[2];
+            const rolePart = (m[3] || '').trim();
+            genderRole = [`${parsedAge}${rawGenderToken}`, rolePart].filter(Boolean).join(' ');
+            break;
+          }
+        }
+      }
+    }
+
+    if (age === null && explicitAgeRow !== null) {
+      age = explicitAgeRow;
     }
 
     const classified = classifyGenderToken(rawGenderToken, explicitGenderRow);
@@ -1013,8 +1318,7 @@
   }
 
   function resolveAuthorFromPostOrCard(container, link, initialParsed) {
-    // If container is a FetLife feed <article data-dwell-author-path="/Username">, use that author directly
-    if (container.dataset && container.dataset.dwellAuthorPath) {
+    if (container.tagName === 'ARTICLE' && container.dataset && container.dataset.dwellAuthorPath) {
       const dwellParsed = parseUserHref(container.dataset.dwellAuthorPath);
       if (dwellParsed && dwellParsed.username) {
         const demos = parseDemographicsFromContainer(container);
@@ -1033,7 +1337,10 @@
       username = cleanHandleCandidate(link.textContent);
     }
 
-    const headerScope = link.parentElement || container;
+    const headerScope = container.tagName === 'ARTICLE'
+      ? (container.querySelector('header') || link.parentElement || container)
+      : (link.parentElement || container);
+
     const headerAnchors = headerScope.getElementsByTagName('a');
     for (const a of headerAnchors) {
       if (a.closest('.flx-toolbar, .flx-profile-bar')) continue;
@@ -1076,17 +1383,27 @@
   }
 
   function findPostOrCardContainer(link, root) {
-    // Never attach toolbars inside prose, forms, status composers, or modals
     if (link.closest('p, blockquote, pre, code, form, label, dialog, #feed-status-form')) return null;
 
-    // 1. Check <article> FIRST so sub-lists inside feed stories (e.g., "X followed Y, Z")
-    // do not get hijacked as individual broken <li> cards
+    const listItem = link.closest('li');
+    if (listItem && root.contains(listItem)) {
+      if (containsEditableComposer(listItem)) return null;
+      const liAnchors = listItem.getElementsByTagName('a');
+      for (const a of liAnchors) {
+        if (a.closest('.flx-toolbar, .flx-profile-bar, p, blockquote, form')) continue;
+        if (parseUserHref(a.getAttribute('href'))) {
+          return a === link ? listItem : null;
+        }
+      }
+      return null;
+    }
+
     const article = link.closest('article');
     if (article && root.contains(article)) {
       if (containsEditableComposer(article)) return null;
       const allAnchors = article.getElementsByTagName('a');
       for (const a of allAnchors) {
-        if (a.closest('.flx-toolbar, .flx-profile-bar, p, blockquote, form')) continue;
+        if (a.closest('.flx-toolbar, .flx-profile-bar, p, blockquote, form, li')) continue;
         if (parseUserHref(a.getAttribute('href'))) {
           return a === link ? article : null;
         }
@@ -1094,21 +1411,6 @@
       return null;
     }
 
-    // 2. Standalone <li> items (comments or member directory lists outside <article>)
-    const commentItem = link.closest('li');
-    if (commentItem && root.contains(commentItem)) {
-      if (containsEditableComposer(commentItem)) return null;
-      const liAnchors = commentItem.getElementsByTagName('a');
-      for (const a of liAnchors) {
-        if (a.closest('.flx-toolbar, .flx-profile-bar, p, blockquote, form')) continue;
-        if (parseUserHref(a.getAttribute('href'))) {
-          return a === link ? commentItem : null;
-        }
-      }
-      return null;
-    }
-
-    // 3. Member cards / grid tiles (e.g. search results, RSPVs, group members)
     let el = link.parentElement;
     let bestSingleCard = null;
     let depth = 0;
@@ -1165,7 +1467,7 @@
   }
 
   // =========================================================================
-  // 5. PROFILE, ABOUT, GROUPS & FETISH SECTION PARSER
+  // 5. PROFILE, ABOUT (WITH NEWLINES), MAIN-PROFILE LIMITS & FETISH PARSER
   // =========================================================================
   function cleanSectionText(raw) {
     return (raw || '')
@@ -1174,7 +1476,7 @@
       .trim();
   }
 
-  function extractCopyBlockText(el) {
+  function extractCopyBlockTextWithLines(el) {
     if (!el) return '';
     const clone = el.cloneNode(true);
     const removeEls = [];
@@ -1191,7 +1493,115 @@
       }
     }
     removeEls.forEach(n => n.remove());
-    return cleanSectionText(clone.textContent);
+
+    clone.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
+    clone.querySelectorAll('p, div, li, h1, h2, h3, h4, h5, h6, tr, blockquote').forEach(block => {
+      block.prepend('\n');
+      block.append('\n');
+    });
+
+    return (clone.textContent || '')
+      .replace(/\r/g, '')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n[ \t]+/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/^(nothing written yet\.?|hasn['’]t written anything yet\.?|no bio\.?)$/i, '')
+      .trim();
+  }
+
+  function extractLimitsFromProfileText(aboutText, fallbackProfileText = '') {
+    const source = [aboutText || '', fallbackProfileText || ''].filter(Boolean).join('\n');
+    if (!source) return [];
+
+    const results = [];
+    const seen = new Set();
+
+    const STOP_PHRASES = /^(none|n\/a|na|ask|ask me|open|flexible|tbd|nothing|not much|discuss|discussed|negotiable|depends|too many to list)$/i;
+
+    const addCandidate = (rawItem) => {
+      const cleaned = (rawItem || '')
+        .replace(/^[-•*▪▫‣⁃–—>\s]+/, '')
+        .replace(/^(and|or|also|plus|strictly|absolutely|definitely|no)\s+/i, '')
+        .replace(/[.!;:,]+$/, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      if (!cleaned || cleaned.length < 2 || cleaned.length > 52) return;
+      if (STOP_PHRASES.test(cleaned)) return;
+      if (/^(into|curious|likes?|yes|loves?|favou?rites?|about me|looking for)$/i.test(cleaned)) return;
+
+      const lower = cleaned.toLowerCase();
+      if (!seen.has(lower)) {
+        seen.add(lower);
+        results.push(cleaned);
+      }
+    };
+
+    const splitAndAddClause = (clause) => {
+      if (!clause) return;
+      const firstSentence = clause.split(/\.\s+/)[0] || clause;
+      const tokens = firstSentence.split(/,|;|\/|\||•|\band\b|\bor\b|\bnor\b/i);
+      for (const tok of tokens) {
+        addCandidate(tok);
+      }
+    };
+
+    const lines = source.split(/\n+/).map(l => l.trim()).filter(Boolean);
+
+    const INLINE_LABEL_RE = /^(?:my\s+)?(?:hard\s+and\s+soft\s+limits?|hard\s+limits?|soft\s+limits?|limits?|hard\s+nos?|hard\s+passes|not\s+into|things?\s+i['’]?m\s+not\s+into|deal\s*breakers?|turn\s*offs?|will\s+not\s+do|won['’]?t\s+do|off\s+the\s+table)\s*(?:include|are|:|-|–|—)\s*(.+)$/i;
+    const STANDALONE_HEADING_RE = /^(?:my\s+)?(?:hard\s+and\s+soft\s+limits?|hard\s+limits?|soft\s+limits?|limits?|hard\s+nos?|hard\s+passes|not\s+into|deal\s*breakers?|turn\s*offs?)\s*:?$/i;
+    const NEXT_SECTION_HEADING_RE = /^(?:about(?:\s+me)?|into|curious|likes?|loves?|favou?rites?|yes(?:es)?|looking\s+for|seeking|turn\s*ons?|kinks?|fetishes|fantasies|bio|summary|rules|expectations|message\s+me)\b/i;
+
+    let inLimitListBlock = false;
+    let listLinesCaptured = 0;
+
+    for (const line of lines) {
+      const inlineMatch = line.match(INLINE_LABEL_RE);
+      if (inlineMatch) {
+        splitAndAddClause(inlineMatch[1]);
+        inLimitListBlock = false;
+        continue;
+      }
+
+      if (STANDALONE_HEADING_RE.test(line)) {
+        inLimitListBlock = true;
+        listLinesCaptured = 0;
+        continue;
+      }
+
+      if (inLimitListBlock) {
+        if (
+          NEXT_SECTION_HEADING_RE.test(line) ||
+          (line.endsWith(':') && line.length < 32) ||
+          listLinesCaptured >= 10
+        ) {
+          inLimitListBlock = false;
+          continue;
+        }
+
+        const isBulletOrShortItem = /^[-•*▪▫‣⁃–—>]/.test(line) || line.length <= 75;
+        if (isBulletOrShortItem) {
+          splitAndAddClause(line);
+          listLinesCaptured++;
+        } else {
+          inLimitListBlock = false;
+        }
+      }
+    }
+
+    const PROSE_PATTERNS = [
+      /\b(?:hard\s+limits?|soft\s+limits?|my\s+limits?|deal\s*breakers?)\s+(?:are|include|consist\s+of)\s+([^.!?\n]{3,140})/gi,
+      /\b(?:not\s+into|hard\s+pass\s+on|strictly\s+no|absolutely\s+no)\s+([^.!?\n]{3,110})/gi
+    ];
+
+    for (const re of PROSE_PATTERNS) {
+      let m;
+      while ((m = re.exec(source)) !== null) {
+        splitAndAddClause(m[1]);
+      }
+    }
+
+    return results.slice(0, 40);
   }
 
   function parseFetishesContainer(rootEl) {
@@ -1204,38 +1614,13 @@
       return { fetishesInto: into, fetishesLimits: limits, fetishesText: '' };
     }
 
-    let currentBucket = 'into';
-    const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_ELEMENT, null);
-    let node;
-    while ((node = walker.nextNode())) {
-      const tag = node.tagName;
-      if (tag === 'A' || (node.closest && node.closest('a'))) {
-        if (tag === 'A') {
-          const href = node.getAttribute('href') || '';
-          if (href.startsWith('/fetishes/') || href.startsWith('/kinks/') || href.startsWith('/tags/')) {
-            const item = (node.textContent || '').replace(/\s+/g, ' ').trim();
-            if (item && item.length < 60 && !/^(edit|learn more|see all|show more)$/i.test(item)) {
-              if (currentBucket === 'limits') {
-                if (!limits.includes(item)) limits.push(item);
-              } else {
-                if (!into.includes(item)) into.push(item);
-              }
-            }
-          }
-        }
-        continue;
-      }
-
-      const isHeadingTag = /^H[1-6]$/.test(tag) || tag === 'STRONG' || tag === 'DT' || tag === 'B';
-      const isLeafLabel = node.children.length === 0;
-      if (isHeadingTag || isLeafLabel) {
-        const label = (node.textContent || '').replace(/\s+/g, ' ').trim();
-        if (label.length >= 3 && label.length <= 28) {
-          if (/^(hard\s+|soft\s+)?limits?:?$/i.test(label) || /^not\s+into:?$/i.test(label)) {
-            currentBucket = 'limits';
-          } else if (/^(into|curious(\s+about)?|giving|receiving|favou?rites?|likes?|kinks|fetishes):?$/i.test(label)) {
-            currentBucket = 'into';
-          }
+    const anchors = rootEl.getElementsByTagName('a');
+    for (const a of anchors) {
+      const href = a.getAttribute('href') || '';
+      if (href.startsWith('/fetishes/') || href.startsWith('/kinks/') || href.startsWith('/tags/')) {
+        const item = (a.textContent || '').replace(/\s+/g, ' ').trim();
+        if (item && item.length < 60 && !/^(edit|learn more|see all|show more)$/i.test(item)) {
+          if (!into.includes(item)) into.push(item);
         }
       }
     }
@@ -1304,7 +1689,7 @@
     const profileHeader = findProfileHeaderElement();
     const demos = profileHeader
       ? parseDemographicsFromContainer(profileHeader)
-      : { age: null, gender: null, genderCategory: null, genderRole: null, location: null, relationships: null, lookingFor: null };
+      : parseDemographicsFromContainer(scope);
 
     let headerText = '';
     if (profileHeader) {
@@ -1322,7 +1707,7 @@
       let sib = aboutAnchor.nextElementSibling;
       while (sib) {
         if (sib.tagName !== 'H2' && sib.tagName !== 'H1' && sib.tagName !== 'H3') {
-          const candidate = extractCopyBlockText(sib);
+          const candidate = extractCopyBlockTextWithLines(sib);
           if (candidate) {
             aboutText = candidate;
             hasAbout = true;
@@ -1340,7 +1725,7 @@
         h2Clone.querySelectorAll('span, a, button').forEach(n => n.remove());
         const headingLabel = (h2Clone.textContent || '').replace(/\s+/g, ' ').trim();
         if (/^about(\s+me)?$/i.test(headingLabel) && h2.nextElementSibling) {
-          const candidate = extractCopyBlockText(h2.nextElementSibling);
+          const candidate = extractCopyBlockTextWithLines(h2.nextElementSibling);
           if (candidate) {
             aboutText = candidate;
             hasAbout = true;
@@ -1361,15 +1746,23 @@
     }
 
     const cleanScope = sanitizeProfileClone(scope, true);
-    const nonFetishFullText = (cleanScope.textContent || '').replace(/\s+/g, ' ').trim();
+    const nonFetishFullText = extractCopyBlockTextWithLines(cleanScope);
+
+    // Extract Limits only from About text (or About-tab profile text) so post titles/navigation don't pollute Limits
+    const limitSourceFallback = (activeView === 'about' && !aboutText) ? nonFetishFullText : '';
+    const extractedProfileLimits = extractLimitsFromProfileText(aboutText, limitSourceFallback);
+    const combinedLimits = Array.from(new Set([
+      ...parsedFetishes.fetishesLimits,
+      ...extractedProfileLimits
+    ]));
 
     return {
-      nonFetishFullText,
+      nonFetishFullText: cleanSectionText(nonFetishFullText),
       aboutText,
       hasAbout,
       fetishesText: parsedFetishes.fetishesText,
       fetishesInto: parsedFetishes.fetishesInto,
-      fetishesLimits: parsedFetishes.fetishesLimits,
+      fetishesLimits: combinedLimits,
       writingsText,
       headerText,
       age: demos.age,
@@ -1487,10 +1880,12 @@
   }
 
   function isAgeOutOfRange(age, settings) {
-    if (!settings.filterByAge || typeof age !== 'number') return false;
-    const min = Number(settings.minAge) || 18;
-    const max = Number(settings.maxAge) || 99;
-    return age < min || age > max;
+    if (!settings.filterByAge) return false;
+    const numericAge = normalizeValidAge(age);
+    if (numericAge === null) return false;
+    const min = normalizeValidAge(settings.minAge) ?? 18;
+    const max = normalizeValidAge(settings.maxAge) ?? 99;
+    return numericAge < min || numericAge > max;
   }
 
   function isGenderRejected(genderCategory, settings) {
@@ -1516,7 +1911,7 @@
 
     const tooltipLines = ruleHits.map(h => `${h.label}: ${h.keyword}`);
     if (limitConflicts.length > 0) {
-      tooltipLines.push(`⚠ Limits: ${limitConflicts.map(c => c.keyword).join(', ')}`);
+      tooltipLines.push(`⚠ Limits (from profile): ${limitConflicts.map(c => c.keyword).join(', ')}`);
     }
     if (excludedHits.length > 0) {
       tooltipLines.push(`Red kinks (Fetishes): -${excludedHits.join(', -')}`);
@@ -1534,10 +1929,13 @@
 
   function formatDemographicSummary(age, gender, genderRole, location, isManualGender = false) {
     const parts = [];
+    const validAge = normalizeValidAge(age);
     if (genderRole) {
-      parts.push(isManualGender ? `${genderRole} (${gender})` : genderRole);
+      const hasLeadingAge = /^\d{2}\b/.test(genderRole.trim());
+      const roleWithAge = (!hasLeadingAge && validAge !== null) ? `${validAge} ${genderRole}` : genderRole;
+      parts.push(isManualGender ? `${roleWithAge} (${gender})` : roleWithAge);
     } else {
-      const head = [age ? String(age) : '', gender || ''].filter(Boolean).join(' • ');
+      const head = [validAge !== null ? String(validAge) : '', gender || ''].filter(Boolean).join(' • ');
       if (head) parts.push(head);
     }
     if (location) parts.push(location);
@@ -1614,7 +2012,6 @@
   }
 
   function applyCardAccentStyle(el, status, ruleHits, isFilteredOut, settings) {
-    // Target the inner card box if this is a borderless <article>
     const targetBox = (el.tagName === 'ARTICLE' && el.firstElementChild && el.firstElementChild.tagName === 'DIV')
       ? el.firstElementChild
       : el;
@@ -1681,7 +2078,6 @@
     if (isProfileBar) {
       bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin:0;flex:1 1 auto;background:transparent;border:none;padding:0;font-family:system-ui,-apple-system,sans-serif;';
     } else if (isInlineRow) {
-      // Inline row item (like a single-line <li>): stay inline on the right without wrapping or pushing text down
       bar.style.cssText = 'display:inline-flex;flex-wrap:nowrap;align-items:center;gap:4px;margin-left:auto;padding:1px 6px;flex:0 0 auto;background:rgba(20,20,25,0.88);border:1px solid #2e2e38;border-radius:5px;font-family:system-ui,-apple-system,sans-serif;z-index:5;';
     } else if (isMinimal) {
       bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin:2px 0 6px 0;padding:2px 6px;width:100%;box-sizing:border-box;background:rgba(20,20,25,0.82);border:1px solid rgba(63,63,70,0.6);border-radius:5px;font-family:system-ui,-apple-system,sans-serif;';
@@ -1700,7 +2096,7 @@
       const cur = Store.getUser(userKey);
       const baseMeta = {
         username: displayHandle || cur.username || null,
-        age: (demos && demos.age) ?? cur.age ?? null,
+        age: cur.manualAge ?? normalizeValidAge(demos?.age) ?? normalizeValidAge(cur.age) ?? null,
         genderRole: (demos && demos.genderRole) || cur.genderRole || null,
         location: (demos && demos.location) || cur.location || null,
         relationships: (demos && demos.relationships) || cur.relationships || null,
@@ -1785,6 +2181,26 @@
       compactControls
     );
 
+    const curAge = normalizeValidAge(record.manualAge) ?? normalizeValidAge(demos?.age) ?? normalizeValidAge(record.age);
+    const ageBtn = document.createElement('button');
+    ageBtn.type = 'button';
+    const ageOut = isAgeOutOfRange(curAge, settings);
+    ageBtn.style.cssText = ageOut
+      ? `${baseBtnStyle}background:rgba(239,68,68,0.16);border-color:#b91c1c;color:#fca5a5;font-weight:600;`
+      : (curAge !== null ? `${baseBtnStyle}color:#cbd5e1;` : `${baseBtnStyle}color:#71717a;`);
+    ageBtn.textContent = curAge !== null ? `${curAge}y` : 'Age?';
+    ageBtn.title = 'Click to set or override age (18-99), or leave blank to reset to auto';
+    ageBtn.addEventListener('click', (e) => {
+      stopNav(e);
+      const raw = window.prompt(
+        `Set manual age (18–99) for /${displayHandle || userKey} (leave blank to reset to auto):`,
+        curAge !== null ? String(curAge) : ''
+      );
+      if (raw === null) return;
+      const parsedAge = normalizeValidAge(raw);
+      persistMeta({ manualAge: parsedAge, age: parsedAge });
+    });
+
     const isPassed = record.status === 'hidden';
     const passBtn = document.createElement('button');
     passBtn.type = 'button';
@@ -1815,9 +2231,9 @@
     });
 
     if (isMinimal) {
-      bar.append(starBtn, passBtn, noteBtn, genderSelect);
+      bar.append(starBtn, passBtn, noteBtn, genderSelect, ageBtn);
     } else {
-      bar.append(starBtn, stageSelect, genderSelect, passBtn, noteBtn);
+      bar.append(starBtn, stageSelect, genderSelect, ageBtn, passBtn, noteBtn);
     }
 
     if (!isInlineRow && (isProfileBar || viewMode === 'full')) {
@@ -1867,11 +2283,12 @@
     if (cachedBio) {
       const bioBadge = document.createElement('span');
       bioBadge.style.cssText = 'font-size:10px;color:#9ca3af;padding:1px 5px;border:1px solid #333;border-radius:4px;';
-      const hasFetishes = Boolean((cachedBio.fetishesInto && cachedBio.fetishesInto.length > 0) || (cachedBio.fetishesLimits && cachedBio.fetishesLimits.length > 0));
+      const hasFetishes = Boolean(cachedBio.fetishesInto && cachedBio.fetishesInto.length > 0);
+      const limitCount = (cachedBio.fetishesLimits || []).length;
       bioBadge.title = cachedBio.hasAbout
-        ? `Locally cached profile — About (${cachedBio.aboutText.length} chars)${hasFetishes ? ' + Fetishes' : ''}`
+        ? `Locally cached profile — About (${cachedBio.aboutText.length} chars)${hasFetishes ? ' + Fetishes' : ''}${limitCount ? ` + ${limitCount} Limits` : ''}`
         : 'Locally cached profile — no About section';
-      bioBadge.textContent = `${cachedBio.hasAbout ? 'About ✓' : 'No About'}${hasFetishes ? ' • Fetishes ✓' : ''}`;
+      bioBadge.textContent = `${cachedBio.hasAbout ? 'About ✓' : 'No About'}${hasFetishes ? ' • Fetishes ✓' : ''}${limitCount ? ` • Limits (${limitCount})` : ''}`;
       toolbar.appendChild(bioBadge);
     }
 
@@ -1906,7 +2323,7 @@
     limitConflicts.forEach((conf) => {
       const badge = document.createElement('span');
       badge.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(245,158,11,0.18);color:#fcd34d;border:1px solid #d97706;font-weight:500;';
-      badge.title = `Listed under Fetishes: Limits (${conf.label})`;
+      badge.title = `Extracted from main profile Limits (${conf.label})`;
       badge.textContent = `⚠ Limit: ${conf.keyword}`;
       toolbar.appendChild(badge);
     });
@@ -2081,16 +2498,43 @@
   };
 
   // =========================================================================
-  // 9. PAGE ENHANCERS: CARDS/POSTS, STICKY PROFILE BAR & CHAT CONTEXT STRIP
+  // 9. PAGE ENHANCERS: CARDS/POSTS, SELF-PROFILE SYNC & STICKY PROFILE BAR
   // =========================================================================
+  function getScopedCardText(container) {
+    const clone = container.cloneNode(true);
+    clone.querySelectorAll('.flx-toolbar').forEach(el => el.remove());
+    if (container.tagName === 'ARTICLE') {
+      clone.querySelectorAll('ul, ol, li').forEach(el => el.remove());
+    }
+    return (clone.textContent || '').replace(/\s+/g, ' ').trim();
+  }
+
   function applyContainerState(container, identity, settings, force = false) {
     if (containsEditableComposer(container)) return;
 
     const userKey = identity.key;
-    const record = Store.getUser(userKey);
+    let record = Store.getUser(userKey);
     const cachedBio = Store.getCachedBio(userKey, settings.bioCacheTtlDays);
     const bioText = cachedBio ? cachedBio.text : '';
     const resolvedGender = resolveEffectiveGender(record, cachedBio, identity.demographics);
+    const resolvedAge = resolveEffectiveAge(record, cachedBio, identity.demographics);
+
+    const liveDemos = identity.demographics || {};
+    if (
+      (liveDemos.age && !record.manualAge && record.age !== liveDemos.age) ||
+      (!record.manualGender && liveDemos.genderCategory && record.genderCategory !== liveDemos.genderCategory) ||
+      (liveDemos.genderRole && !record.genderRole)
+    ) {
+      const patch = { username: identity.username || record.username || null };
+      if (liveDemos.age && !record.manualAge) patch.age = liveDemos.age;
+      if (liveDemos.genderRole) patch.genderRole = liveDemos.genderRole;
+      if (liveDemos.location && !record.location) patch.location = liveDemos.location;
+      if (!record.manualGender && liveDemos.genderCategory) {
+        patch.gender = liveDemos.gender;
+        patch.genderCategory = liveDemos.genderCategory;
+      }
+      record = Store.setUser(userKey, patch);
+    }
 
     const globalViewMode = settings.cardViewMode || 'full';
     const overrideMode = cardViewOverrides.get(userKey);
@@ -2099,7 +2543,7 @@
       : (overrideMode || globalViewMode);
 
     const mergedDemos = {
-      age: identity.demographics?.age ?? record.age ?? cachedBio?.age ?? null,
+      age: resolvedAge,
       gender: resolvedGender.gender,
       genderCategory: resolvedGender.genderCategory,
       isManualGender: resolvedGender.isManual,
@@ -2115,9 +2559,7 @@
     const genderRejected = isGenderRejected(mergedDemos.genderCategory, settings);
 
     if (!container.dataset.flxRawItemText) {
-      const clone = container.cloneNode(true);
-      clone.querySelectorAll('.flx-toolbar').forEach(el => el.remove());
-      container.dataset.flxRawItemText = (clone.textContent || '').replace(/\s+/g, ' ').trim();
+      container.dataset.flxRawItemText = getScopedCardText(container);
     }
     const itemText = container.dataset.flxRawItemText;
 
@@ -2131,6 +2573,7 @@
       effectiveViewMode,
       status: record.status,
       manualGender: record.manualGender,
+      manualAge: record.manualAge,
       note: record.note,
       lastSeen: record.lastSeen,
       lastContacted: record.lastContacted,
@@ -2145,7 +2588,6 @@
       maxAge: settings.maxAge,
       hideMode: settings.hideMode,
       dimOpacity: settings.dimOpacity,
-      cardToolbarPosition: settings.cardToolbarPosition,
       showNotesInline: settings.showNotesInline,
       excludedHits,
       ruleHits,
@@ -2164,8 +2606,11 @@
     const isFilteredOut = record.status === 'hidden' || excludedHits.length > 0 || missingAbout || ageRejected || genderRejected;
     applyCardAccentStyle(container, record.status, ruleHits, isFilteredOut, settings);
 
-    const oldBar = container.querySelector('.flx-toolbar');
-    if (oldBar) oldBar.remove();
+    for (const child of Array.from(container.children)) {
+      if (child.classList && child.classList.contains('flx-toolbar')) {
+        child.remove();
+      }
+    }
 
     if (effectiveViewMode !== 'off') {
       const isInlineRow = isInlineFlexRowItem(container);
@@ -2204,7 +2649,6 @@
         isInlineRow ? 'minimal' : effectiveViewMode
       );
 
-      // Always append at the bottom of the card/row so we NEVER push top headers or content down
       container.appendChild(toolbar);
     }
   }
@@ -2220,7 +2664,10 @@
     const seenContainers = new Set();
 
     for (const link of links) {
-      if (link.closest('nav, header, footer, aside, form, dialog, #feed-status-form, .flx-toolbar, .flx-profile-bar, .flx-chat-context')) continue;
+      if (link.closest('nav, footer, aside, form, dialog, #feed-status-form, .flx-toolbar, .flx-profile-bar, .flx-chat-context')) continue;
+      const closestHeader = link.closest('header');
+      if (closestHeader && !closestHeader.closest('article')) continue;
+
       const parsed = parseUserHref(link.getAttribute('href'));
       if (!parsed || parsed.key === currentProfileKey) continue;
       if (selfUsername && parsed.key === selfUsername) continue;
@@ -2240,13 +2687,125 @@
     return seenContainers.size;
   }
 
+  function findProfileBarAnchorBlock() {
+    const profileNav = document.getElementById('profile-navigation');
+    if (profileNav) {
+      return profileNav.closest('header') || profileNav;
+    }
+    const profileHeader = findProfileHeaderElement();
+    if (profileHeader) return profileHeader;
+
+    const mainContent = document.getElementById('main-content');
+    if (mainContent) {
+      const h1 = mainContent.querySelector('h1');
+      if (h1) return h1.closest('header') || h1.parentElement || mainContent.firstElementChild;
+      if (mainContent.firstElementChild) return mainContent.firstElementChild;
+    }
+    return null;
+  }
+
   function enhanceProfilePage() {
     const profilePage = detectCurrentProfilePage();
     if (!profilePage) return null;
 
     const currentKey = profilePage.key;
     const displayHandle = profilePage.username || currentKey;
-    const { selfUsername } = getSelfIdentity();
+    const isSelf = isCurrentProfileSelf(profilePage);
+
+    let liveData;
+    try {
+      liveData = extractProfileData(profilePage.activeView);
+    } catch (err) {
+      console.error('[FLX] extractProfileData error:', err);
+      liveData = {
+        nonFetishFullText: '',
+        aboutText: '',
+        hasAbout: null,
+        fetishesText: '',
+        fetishesInto: [],
+        fetishesLimits: [],
+        writingsText: '',
+        headerText: '',
+        age: null,
+        gender: null,
+        genderCategory: null,
+        genderRole: null,
+        location: null,
+        relationships: null,
+        lookingFor: null,
+        groups: []
+      };
+    }
+
+    const anchorBlock = findProfileBarAnchorBlock();
+    if (!anchorBlock) return profilePage;
+
+    if (isSelf) {
+      const prevSelf = Store.getSelfProfile();
+      const nextInto = liveData.fetishesInto.length > 0 ? liveData.fetishesInto : (prevSelf.fetishesInto || []);
+      const nextLimits = liveData.fetishesLimits.length > 0 ? liveData.fetishesLimits : (prevSelf.fetishesLimits || []);
+      const nextGroups = liveData.groups.length > 0 ? liveData.groups : (prevSelf.groups || []);
+
+      const updatedSelf = Store.saveSelfProfile({
+        key: currentKey,
+        username: displayHandle,
+        fetishesInto: nextInto,
+        fetishesLimits: nextLimits,
+        groups: nextGroups,
+        lookingFor: liveData.lookingFor || prevSelf.lookingFor || null
+      });
+
+      const settings = Store.getSettings();
+      if (settings.autoSyncSelfKinks && (liveData.fetishesInto.length > 0 || liveData.fetishesLimits.length > 0)) {
+        Store.syncSelfKinksToRules(updatedSelf);
+      }
+
+      const selfSig = JSON.stringify({
+        selfKey: currentKey,
+        intoCount: updatedSelf.fetishesInto.length,
+        limitsCount: updatedSelf.fetishesLimits.length,
+        groupCount: updatedSelf.groups.length,
+        autoSync: settings.autoSyncSelfKinks
+      });
+
+      const existingBars = document.getElementsByClassName('flx-profile-bar');
+      for (const bar of existingBars) {
+        if (bar.dataset.flxProfile === currentKey && bar.dataset.flxSig === selfSig) {
+          return profilePage;
+        }
+      }
+
+      Array.from(document.getElementsByClassName('flx-profile-bar')).forEach(el => el.remove());
+
+      const selfBar = document.createElement('div');
+      selfBar.className = 'flx-profile-bar';
+      selfBar.dataset.flxProfile = currentKey;
+      selfBar.dataset.flxSig = selfSig;
+      selfBar.style.cssText = 'width:100%;max-width:1280px;margin:8px auto 0;padding:9px 14px;background:rgba(16,24,32,0.96);backdrop-filter:blur(10px);border:1px solid #0284c7;border-radius:8px;display:flex;flex-wrap:wrap;align-items:center;gap:10px;position:relative;z-index:90;box-sizing:border-box;font-family:system-ui,sans-serif;font-size:12px;color:#e4e4e7;';
+
+      const badge = document.createElement('strong');
+      badge.style.color = '#7dd3fc';
+      badge.textContent = `👤 Your Profile (/${displayHandle})`;
+
+      const stats = document.createElement('span');
+      stats.style.color = '#cbd5e1';
+      stats.textContent = `Synced: ${updatedSelf.fetishesInto.length} Into kinks • ${updatedSelf.fetishesLimits.length} Profile Limits • ${updatedSelf.groups.length} Groups`;
+
+      const syncBtn = document.createElement('button');
+      syncBtn.type = 'button';
+      syncBtn.style.cssText = 'background:rgba(56,189,248,0.18);color:#7dd3fc;border:1px solid #0284c7;border-radius:5px;padding:3px 9px;cursor:pointer;font-size:11px;font-weight:600;margin-left:auto;';
+      syncBtn.textContent = '↻ Sync My Kinks & Profile Limits to Filter';
+      syncBtn.title = 'Add your Into fetishes to the Shared Kink highlight category and your About-text Limits to Red Kink Excludes';
+      syncBtn.addEventListener('click', () => {
+        const res = Store.syncSelfKinksToRules(Store.getSelfProfile());
+        CardNavigator.showToast(`Synced ${res.intoAdded} Into kinks & ${res.limitsAdded} Profile Limits from /${displayHandle}`);
+        withObserverPaused(enhanceProfilePage);
+      });
+
+      selfBar.append(badge, stats, syncBtn);
+      anchorBlock.insertAdjacentElement('afterend', selfBar);
+      return profilePage;
+    }
 
     const today = new Date().toISOString().slice(0, 10);
     const existing = Store.getUser(currentKey);
@@ -2257,33 +2816,25 @@
       });
     }
 
-    const liveData = extractProfileData(profilePage.activeView);
-    if (selfUsername && currentKey === selfUsername && liveData.groups.length > 0) {
-      Store.setSelfGroups(liveData.groups);
-    }
-
     let cachedBio = Store.getCachedBio(currentKey, Store.getSettings().bioCacheTtlDays);
 
     if (
       liveData.nonFetishFullText.length > 30 ||
       liveData.hasAbout === true ||
       liveData.fetishesText.length > 0 ||
+      liveData.fetishesLimits.length > 0 ||
       liveData.writingsText.length > 0 ||
-      liveData.groups.length > 0
+      liveData.groups.length > 0 ||
+      liveData.age !== null
     ) {
       cachedBio = Store.mergeCachedProfile(currentKey, liveData, profilePage.username);
     }
-
-    const profileNav = document.getElementById('profile-navigation');
-    const navHeader = profileNav ? profileNav.closest('header') : null;
-    const profileHeader = findProfileHeaderElement();
-    const anchorBlock = navHeader || profileHeader || document.getElementById('main-content')?.firstElementChild;
-    if (!anchorBlock) return profilePage;
 
     const latestUser = Store.getUser(currentKey);
     const currentSettings = Store.getSettings();
     const sig = JSON.stringify({
       currentKey,
+      age: resolveEffectiveAge(latestUser, cachedBio, liveData),
       hasAbout: cachedBio ? cachedBio.hasAbout : null,
       aboutLen: cachedBio ? cachedBio.aboutText.length : 0,
       textLen: cachedBio ? cachedBio.text.length : 0,
@@ -2291,6 +2842,7 @@
       groupCount: cachedBio && cachedBio.groups ? cachedBio.groups.length : 0,
       status: latestUser.status,
       manualGender: latestUser.manualGender,
+      manualAge: latestUser.manualAge,
       note: latestUser.note,
       lastContacted: latestUser.lastContacted,
       genderCategory: latestUser.genderCategory,
@@ -2312,20 +2864,24 @@
     }
 
     const renderProfileBar = () => {
+      const targetAnchor = findProfileBarAnchorBlock();
+      if (!targetAnchor) return;
+
       const settings = Store.getSettings();
       const latestBio = Store.getCachedBio(currentKey, settings.bioCacheTtlDays);
       const u = Store.getUser(currentKey);
-      const resolvedGender = resolveEffectiveGender(u, latestBio);
+      const resolvedGender = resolveEffectiveGender(u, latestBio, liveData);
+      const resolvedAge = resolveEffectiveAge(u, latestBio, liveData);
       const demos = {
-        age: u.age ?? latestBio?.age ?? null,
+        age: resolvedAge,
         gender: resolvedGender.gender,
         genderCategory: resolvedGender.genderCategory,
         isManualGender: resolvedGender.isManual,
         autoDetected: resolvedGender.autoDetected,
-        genderRole: u.genderRole || latestBio?.genderRole || null,
-        location: u.location || latestBio?.location || null,
-        relationships: u.relationships || latestBio?.relationships || null,
-        lookingFor: u.lookingFor || latestBio?.lookingFor || null
+        genderRole: u.genderRole || latestBio?.genderRole || liveData?.genderRole || null,
+        location: u.location || latestBio?.location || liveData?.location || null,
+        relationships: u.relationships || latestBio?.relationships || liveData?.relationships || null,
+        lookingFor: u.lookingFor || latestBio?.lookingFor || liveData?.lookingFor || null
       };
 
       Array.from(document.getElementsByClassName('flx-profile-bar')).forEach(el => el.remove());
@@ -2387,7 +2943,7 @@
       }
 
       wrapper.append(label, toolbar, pinBtn);
-      anchorBlock.insertAdjacentElement('afterend', wrapper);
+      targetAnchor.insertAdjacentElement('afterend', wrapper);
       scheduleStickySync();
     };
 
@@ -2457,6 +3013,7 @@
       const record = Store.getUser(userKey);
       const cachedBio = Store.getCachedBio(userKey, settings.bioCacheTtlDays);
       const resolvedGender = resolveEffectiveGender(record, cachedBio);
+      const resolvedAge = resolveEffectiveAge(record, cachedBio);
 
       const scanText = cachedBio ? cachedBio.text : '';
       const fetishIntoText = getFetishIntoSearchText(cachedBio);
@@ -2467,6 +3024,7 @@
 
       const sig = JSON.stringify({
         userKey,
+        age: resolvedAge,
         status: record.status,
         manualGender: record.manualGender,
         note: record.note,
@@ -2508,7 +3066,7 @@
       left.appendChild(title);
 
       const demoPill = createDemographicPill(
-        record.age ?? cachedBio?.age ?? null,
+        resolvedAge,
         resolvedGender.gender,
         record.genderRole || cachedBio?.genderRole || null,
         record.location || cachedBio?.location || null,
@@ -2686,10 +3244,12 @@
       const settings = Store.getSettings();
       const users = Store.getAllUsers();
       const cache = Store.getBioCache();
+      const { selfUsername } = getSelfIdentity();
       const allKeys = new Set([...Object.keys(users), ...Object.keys(cache)]);
       const entries = [];
 
       for (const key of allKeys) {
+        if (selfUsername && key === selfUsername) continue;
         const u = this.normalizeUser(users[key]);
         const c = cache[key] || null;
         const displayHandle = u.username || (c && c.username) || key;
@@ -2701,7 +3261,11 @@
         const aboutText = c && typeof c.aboutText === 'string' ? c.aboutText : '';
         const fetishesText = c && c.sections && typeof c.sections.fetishes === 'string' ? c.sections.fetishes : '';
         const fetishesInto = c && Array.isArray(c.fetishesInto) ? c.fetishesInto : [];
-        const fetishesLimits = c && Array.isArray(c.fetishesLimits) ? c.fetishesLimits : [];
+
+        let fetishesLimits = c && Array.isArray(c.fetishesLimits) ? c.fetishesLimits : [];
+        if (fetishesLimits.length === 0 && (aboutText || bioText)) {
+          fetishesLimits = extractLimitsFromProfileText(aboutText, bioText);
+        }
 
         const hasCache = Boolean(c && bioText.length > 0);
         const hasAbout = Boolean(c && c.hasAbout === true);
@@ -2709,7 +3273,7 @@
         const hasFetishes = Boolean(fetishesInto.length > 0 || fetishesLimits.length > 0 || fetishesText.length > 0);
 
         const resolvedGender = resolveEffectiveGender(u, c);
-        const age = u.age ?? c?.age ?? null;
+        const age = resolveEffectiveAge(u, c);
         const genderRole = u.genderRole || c?.genderRole || null;
         const location = u.location || c?.location || null;
         const relationships = u.relationships || c?.relationships || null;
@@ -2786,6 +3350,7 @@
         lastContacted: null,
         username: null,
         age: null,
+        manualAge: null,
         gender: null,
         genderCategory: null,
         manualGender: null,
@@ -2821,6 +3386,9 @@
         if (e.ruleHits.length > 0) {
           lines.push(`* **Matches:** ${e.ruleHits.map(h => `${h.label} (${h.keyword})`).join(', ')}`);
         }
+        if (e.fetishesLimits.length > 0) {
+          lines.push(`* **Profile Limits:** ${e.fetishesLimits.join(', ')}`);
+        }
         if (e.limitConflicts.length > 0) {
           lines.push(`* **Limit Conflicts:** ${e.limitConflicts.map(c => c.keyword).join(', ')}`);
         }
@@ -2846,7 +3414,12 @@
     open() {
       if (this.isOpen) return;
       this.isOpen = true;
-      this.filterGender = Store.getSettings().genderFilter || 'all';
+      const s = Store.getSettings();
+      this.filterGender = s.genderFilter || 'all';
+      if (s.filterByAge) {
+        if (!this.minAgeFilter) this.minAgeFilter = String(s.minAge || '');
+        if (!this.maxAgeFilter) this.maxAgeFilter = String(s.maxAge || '');
+      }
       this.renderModal();
       document.addEventListener('keydown', this._onKeyDown);
     },
@@ -3198,8 +3771,8 @@
       }
 
       const q = this.searchQuery.trim().toLowerCase();
-      const minA = this.minAgeFilter ? parseInt(this.minAgeFilter, 10) : null;
-      const maxA = this.maxAgeFilter ? parseInt(this.maxAgeFilter, 10) : null;
+      const minA = normalizeValidAge(this.minAgeFilter);
+      const maxA = normalizeValidAge(this.maxAgeFilter);
 
       const filtered = allEntries.filter((entry) => {
         if (this.filterStatus === 'shortlist' && entry.status !== 'shortlist') return false;
@@ -3253,6 +3826,7 @@
             entry.note,
             entry.aboutText,
             entry.fetishesText,
+            entry.fetishesLimits.join(' '),
             entry.fullText,
             ...entry.ruleHits.map(h => `${h.label} ${h.keyword}`),
             ...entry.excludedHits
@@ -3371,7 +3945,8 @@
         if (entry.hasCache) {
           const b = document.createElement('span');
           b.className = 'pill';
-          b.textContent = `${entry.hasAbout ? 'About ✓' : 'No About'}${entry.hasFetishes ? ' • Fetishes ✓' : ''}`;
+          const limCount = entry.fetishesLimits.length;
+          b.textContent = `${entry.hasAbout ? 'About ✓' : 'No About'}${entry.fetishesInto.length ? ' • Fetishes ✓' : ''}${limCount ? ` • Limits (${limCount})` : ''}`;
           if (entry.noAbout) {
             b.style.color = '#fca5a5';
             b.style.borderColor = '#7f1d1d';
@@ -3396,6 +3971,7 @@
         for (const c of entry.limitConflicts) {
           const b = document.createElement('span');
           b.className = 'pill pill-warn';
+          b.title = 'Extracted from main profile Limits';
           b.textContent = `⚠ Limit: ${c.keyword}`;
           badges.appendChild(b);
         }
@@ -3558,7 +4134,7 @@
               if (entry.fetishesLimits.length > 0) {
                 const lbl = document.createElement('div');
                 lbl.style.cssText = 'font-size:11px;color:#fca5a5;font-weight:600;margin:6px 0 3px;';
-                lbl.textContent = `Limits (${entry.fetishesLimits.length}):`;
+                lbl.textContent = `Extracted Profile Limits (${entry.fetishesLimits.length}):`;
                 const wrap = document.createElement('div');
                 wrap.className = 'fetish-group';
                 for (const item of entry.fetishesLimits) {
@@ -3570,7 +4146,7 @@
                 bodyBox.append(lbl, wrap);
               }
               if (entry.fetishesInto.length === 0 && entry.fetishesLimits.length === 0) {
-                bodyBox.textContent = entry.fetishesText || 'No structured fetishes cached yet.';
+                bodyBox.textContent = entry.fetishesText || 'No structured fetishes or profile limits cached yet.';
               }
             } else if (activeSub === 'groups') {
               bodyBox.textContent = entry.groups.length > 0
@@ -3583,7 +4159,7 @@
 
           const tabOptions = [
             { id: 'about', label: 'About' },
-            ...(entry.hasFetishes ? [{ id: 'fetishes', label: 'Fetishes & Limits' }] : []),
+            ...(entry.hasFetishes ? [{ id: 'fetishes', label: `Fetishes & Profile Limits (${entry.fetishesLimits.length})` }] : []),
             ...(entry.groups.length > 0 ? [{ id: 'groups', label: `Groups (${entry.groups.length})` }] : []),
             { id: 'full', label: 'Full Cache' }
           ];
@@ -3616,7 +4192,7 @@
   };
 
   // =========================================================================
-  // 11. SHADOW DOM FLOATING HUD (WITH QUICK OVERLAY VIEW CYCLE BUTTON)
+  // 11. SHADOW DOM FLOATING HUD (WITH SELF-PROFILE SYNC & LIVE AGE FILTER)
   // =========================================================================
   const Hud = {
     shadow: null,
@@ -3755,6 +4331,17 @@
           </div>
           <div class="panel" id="hud-panel" style="display:none;">
             <div class="section-box">
+              <div class="rules-header">
+                <span>👤 My Profile & Self-Kink Sync</span>
+                <button type="button" class="sky" id="btn-sync-self">↻ Sync From My Profile</button>
+              </div>
+              <div id="self-profile-summary" style="font-size:11px;color:#9ca3af;"></div>
+              <label class="inline-label">
+                <input type="checkbox" id="in-auto-sync-self"> Auto-sync my Fetishes (Into → Shared Kink, Profile Limits → Excludes) when visiting my profile
+              </label>
+            </div>
+
+            <div class="section-box">
               <div class="grid2">
                 <label>HUD Position
                   <select id="in-pos">
@@ -3888,6 +4475,17 @@
         $('storage-size').textContent = `${stats.kb} KB (${stats.cacheCount} cached, ${stats.userCount} CRM)`;
       };
 
+      const refreshSelfSummary = () => {
+        const { selfId, selfUsername, displayUsername } = getSelfIdentity();
+        const selfProf = Store.getSelfProfile();
+        const handleLabel = displayUsername || selfProf.username || selfUsername || (selfId ? `User #${selfId}` : 'Not detected yet');
+        const intoCount = (selfProf.fetishesInto || []).length;
+        const limCount = (selfProf.fetishesLimits || []).length;
+        const grpCount = (selfProf.groups || []).length;
+        $('self-profile-summary').textContent =
+          `Detected: /${handleLabel} • ${intoCount} Into kinks • ${limCount} Profile Limits • ${grpCount} Groups (visit your profile to refresh)`;
+      };
+
       const addRuleRow = (rule = { label: 'New Tag', color: '#f472b6', keywords: [] }) => {
         const row = document.createElement('div');
         row.className = 'rule-row';
@@ -4007,6 +4605,7 @@
         this.draftKeybinds = Object.assign({}, s.keybinds);
         this.capturingKeyAction = null;
 
+        $('in-auto-sync-self').checked = Boolean(s.autoSyncSelfKinks);
         $('in-pos').value = s.hudPosition;
         $('in-view-mode').value = s.cardViewMode || 'full';
         $('in-mode').value = s.hideMode;
@@ -4030,8 +4629,50 @@
         s.messageTemplates.forEach(tpl => addTemplateRow(tpl));
 
         renderKeybindRows();
+        refreshSelfSummary();
         refreshStorageLabel();
       };
+
+      $('btn-sync-self').addEventListener('click', () => {
+        const selfProf = Store.getSelfProfile();
+        if ((selfProf.fetishesInto || []).length === 0 && (selfProf.fetishesLimits || []).length === 0) {
+          const { displayUsername, selfUsername } = getSelfIdentity();
+          const h = displayUsername || selfUsername;
+          if (h) {
+            openProfileInBackgroundTab(`${window.location.origin}/${h}`);
+            $('hud-status').textContent = `Opened /${h} in a new tab—scroll through your profile to cache kinks & limits`;
+          } else {
+            $('hud-status').textContent = 'Visit your own FetLife profile page once to capture your kinks & limits';
+          }
+          setTimeout(() => { $('hud-status').textContent = ''; }, 3500);
+          return;
+        }
+        const res = Store.syncSelfKinksToRules(selfProf);
+        syncFormFromStore();
+        runAll();
+        $('hud-status').textContent = `✓ Synced ${res.intoAdded} Shared Kinks & ${res.limitsAdded} Profile Limits`;
+        setTimeout(() => { $('hud-status').textContent = ''; }, 3000);
+      });
+
+      const applyLiveDemographicControls = () => {
+        const minVal = normalizeValidAge($('in-min-age').value) ?? 30;
+        const maxVal = normalizeValidAge($('in-max-age').value) ?? 45;
+        Store.saveSettings({
+          filterByAge: $('in-age-filter').checked,
+          minAge: Math.min(minVal, maxVal),
+          maxAge: Math.max(minVal, maxVal),
+          genderFilter: $('in-gender-filter').value,
+          hideMode: $('in-mode').value
+        });
+        Array.from(document.getElementsByClassName('flx-profile-bar')).forEach(el => el.remove());
+        runAll();
+      };
+
+      $('in-age-filter').addEventListener('change', applyLiveDemographicControls);
+      $('in-min-age').addEventListener('change', applyLiveDemographicControls);
+      $('in-max-age').addEventListener('change', applyLiveDemographicControls);
+      $('in-gender-filter').addEventListener('change', applyLiveDemographicControls);
+      $('in-mode').addEventListener('change', applyLiveDemographicControls);
 
       $('btn-crm').addEventListener('click', () => {
         if (CrmModal.isOpen) CrmModal.close();
@@ -4130,8 +4771,12 @@
           navEnabled: $('in-kb-nav').checked
         });
 
+        const rawMin = normalizeValidAge($('in-min-age').value) ?? 30;
+        const rawMax = normalizeValidAge($('in-max-age').value) ?? 45;
+
         cardViewOverrides.clear();
         const next = Store.saveSettings({
+          autoSyncSelfKinks: $('in-auto-sync-self').checked,
           hudPosition: $('in-pos').value,
           cardViewMode: $('in-view-mode').value,
           cardToolbarPosition: 'bottom',
@@ -4139,8 +4784,8 @@
           genderFilter: $('in-gender-filter').value,
           dimOpacity: parseFloat($('in-opacity').value) || 0.18,
           filterByAge: $('in-age-filter').checked,
-          minAge: Math.max(18, parseInt($('in-min-age').value, 10) || 30),
-          maxAge: Math.min(99, parseInt($('in-max-age').value, 10) || 45),
+          minAge: Math.min(rawMin, rawMax),
+          maxAge: Math.max(rawMin, rawMax),
           stickyProfileBar: $('in-sticky-profile').checked,
           bioCacheTtlDays: Math.max(1, parseInt($('in-ttl').value, 10) || 14),
           showNotesInline: $('in-notes').checked,
@@ -4285,6 +4930,7 @@
 
   function runAll() {
     withObserverPaused(() => {
+      Store.runOneTimeSanitization();
       syncStickyViewportOffset();
       attachScrollListeners();
       Hud.init();
