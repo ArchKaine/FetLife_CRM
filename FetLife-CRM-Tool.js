@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         FetLife Local Cache Filter & CRM
 // @namespace    local.fl.enhancer
-// @version      1.9.1
-// @description  Zero-fetch passive profile & fetish caching, toggleable Minimal/Compact/Full card views with persistent match dots, sticky profile controls, manual & auto female-only filtering, and searchable CRM modal
+// @version      1.11.0
+// @description  Zero-fetch passive profile & fetish caching, Fetishes-only red-kink exclusions, toggleable Minimal/Compact/Full card views, sticky profile controls, gender/age filtering, and searchable CRM modal
 // @match        https://fetlife.com/*
 // @match        https://*.fetlife.com/*
 // @grant        GM_getValue
@@ -142,7 +142,7 @@
     { key: 'toggleMinimal', label: 'Toggle Focused Card Minimal' },
     { key: 'shortlist',     label: 'Shortlist Focused Card' },
     { key: 'pass',          label: 'Pass / Hide Focused Card' },
-    { key: 'cycleGender',   label: 'Cycle Gender (♀/✕/Auto)' },
+    { key: 'cycleGender',   label: 'Cycle Gender (♀/♂/⚧/Auto)' },
     { key: 'note',          label: 'Edit Note on Card' },
     { key: 'openTab',       label: 'Open Profile in New Tab' }
   ];
@@ -156,7 +156,7 @@
     dimOpacity: 0.18,                 // 0.05 to 0.75
     showHidden: false,
     hideNoAbout: false,
-    filterFemaleOnly: true,
+    genderFilter: 'female',           // 'all' | 'female' | 'male' | 'other'
     filterByAge: false,
     minAge: 30,
     maxAge: 45,
@@ -192,12 +192,12 @@
 
   const USERNAME_RE = /^[a-zA-Z0-9_.-]{2,36}$/;
 
-  const HEADLINE_DEMO_RE = /^([1-9]\d)\s*(Cis\s*Female|Cis\s*Woman|Trans\s*Woman|Trans\s*Female|Trans\s*Man|Trans\s*Male|Non-binary|Nonbinary|Genderfluid|Genderqueer|Crossdresser|Transvestite|Intersex|Agender|Female|Woman|Male|Man|MtF|FtM|NB|GF|GQ|IS|AG|TG|TS|CD|TV|M|F)(?:\s+([A-Za-z][A-Za-z /-]{1,32}))?$/i;
+  const HEADLINE_DEMO_RE = /^([1-9]\d)\s*(Cis\s*Female|Cis\s*Woman|Cis\s*Male|Cis\s*Man|Trans\s*Woman|Trans\s*Female|Trans\s*Man|Trans\s*Male|Non-binary|Nonbinary|Genderfluid|Genderqueer|Crossdresser|Transvestite|Intersex|Agender|Female|Woman|Male|Man|MtF|FtM|NB|GF|GQ|IS|AG|TG|TS|CD|TV|M|F)(?:\s+([A-Za-z][A-Za-z /-]{1,32}))?$/i;
 
-  const NON_FEMALE_GENDER_RE = /\b(m|male|cis\s*male|man|cis\s*man|nb|non-?binary|mtf|ftm|trans\s*woman|trans\s*female|trans\s*man|trans\s*male|transgender|transsexual|gf|genderfluid|gq|genderqueer|ag|agender|is|intersex|cd|crossdresser|tv|transvestite|two-?spirit|amab)\b/i;
+  const OTHER_GENDER_RE = /\b(nb|non-?binary|mtf|ftm|trans\s*woman|trans\s*female|trans\s*man|trans\s*male|transgender|transsexual|gf|genderfluid|gq|genderqueer|ag|agender|is|intersex|cd|crossdresser|tv|transvestite|two-?spirit|amab|afab)\b/i;
   const FEMALE_GENDER_RE = /^(f|female|cis\s*f|cis\s*female|cisgender\s*female|woman|cis\s*woman|cisgender\s*woman)$/i;
+  const MALE_GENDER_RE = /^(m|male|cis\s*m|cis\s*male|cisgender\s*male|man|cis\s*man|cisgender\s*man)$/i;
 
-  // Per-session per-card view overrides (userKey -> 'minimal' | 'full')
   const cardViewOverrides = new Map();
 
   // =========================================================================
@@ -240,40 +240,54 @@
   // 3. GENDER CLASSIFICATION, KEYBIND HELPERS & PERSISTENT STORAGE
   // =========================================================================
   function classifyGenderToken(rawToken, explicitRowText = '') {
-    const combined = `${rawToken || ''} ${explicitRowText || ''}`.replace(/\s+/g, ' ').trim();
-    if (!combined) return { gender: null, isFemale: null };
-
     const cleanToken = (rawToken || '').replace(/\s+/g, ' ').trim();
     const cleanRow = (explicitRowText || '').replace(/\s+/g, ' ').trim();
+    const combined = `${cleanToken} ${cleanRow}`.trim();
+    if (!combined) return { gender: null, genderCategory: null };
 
-    if (NON_FEMALE_GENDER_RE.test(cleanToken) || NON_FEMALE_GENDER_RE.test(cleanRow)) {
-      return { gender: cleanRow || cleanToken, isFemale: false };
+    if (OTHER_GENDER_RE.test(cleanToken) || OTHER_GENDER_RE.test(cleanRow)) {
+      return { gender: cleanRow || cleanToken, genderCategory: 'other' };
     }
     if (FEMALE_GENDER_RE.test(cleanToken) || FEMALE_GENDER_RE.test(cleanRow)) {
-      return { gender: cleanRow || cleanToken.toUpperCase(), isFemale: true };
+      return { gender: cleanRow || cleanToken.toUpperCase(), genderCategory: 'female' };
     }
-    return { gender: cleanRow || cleanToken || null, isFemale: null };
+    if (MALE_GENDER_RE.test(cleanToken) || MALE_GENDER_RE.test(cleanRow)) {
+      return { gender: cleanRow || cleanToken.toUpperCase(), genderCategory: 'male' };
+    }
+    return { gender: cleanRow || cleanToken || null, genderCategory: null };
   }
 
   function inferAutoGender(record, cachedBio, liveDemos = null) {
-    if (typeof liveDemos?.isFemale === 'boolean') {
-      return { gender: liveDemos.gender || null, isFemale: liveDemos.isFemale };
+    if (liveDemos?.genderCategory) {
+      return { gender: liveDemos.gender || null, genderCategory: liveDemos.genderCategory };
     }
-    if (typeof cachedBio?.isFemale === 'boolean') {
-      return { gender: cachedBio.gender || null, isFemale: cachedBio.isFemale };
+    if (cachedBio?.genderCategory) {
+      return { gender: cachedBio.gender || null, genderCategory: cachedBio.genderCategory };
     }
-    if (!record?.manualGender && typeof record?.isFemale === 'boolean') {
-      return { gender: record.gender || null, isFemale: record.isFemale };
+    if (!record?.manualGender && record?.genderCategory) {
+      return { gender: record.gender || null, genderCategory: record.genderCategory };
     }
+
     const roleStr = liveDemos?.genderRole || record?.genderRole || cachedBio?.genderRole || '';
     const m = roleStr.match(HEADLINE_DEMO_RE);
     if (m) {
       return classifyGenderToken(m[2], liveDemos?.gender || cachedBio?.gender || '');
     }
-    if (liveDemos?.gender || cachedBio?.gender) {
-      return classifyGenderToken(liveDemos?.gender || cachedBio?.gender);
+
+    const rawG = liveDemos?.gender || cachedBio?.gender || (!record?.manualGender ? record?.gender : '');
+    if (rawG) {
+      const classified = classifyGenderToken(rawG);
+      if (classified.genderCategory) return classified;
     }
-    return { gender: null, isFemale: null };
+
+    if (cachedBio?.isFemale === true || (!record?.manualGender && record?.isFemale === true)) {
+      return { gender: rawG || 'F', genderCategory: 'female' };
+    }
+    if (cachedBio?.isFemale === false || (!record?.manualGender && record?.isFemale === false)) {
+      return { gender: rawG || 'Other', genderCategory: 'other' };
+    }
+
+    return { gender: null, genderCategory: null };
   }
 
   function resolveEffectiveGender(record, cachedBio, liveDemos = null) {
@@ -282,19 +296,27 @@
     if (record?.manualGender === 'female') {
       return {
         gender: '♀ Female (Manual)',
-        shortGender: '♀ Female',
-        isFemale: true,
+        genderCategory: 'female',
         isManual: true,
         manualGender: 'female',
         autoDetected: auto
       };
     }
 
+    if (record?.manualGender === 'male') {
+      return {
+        gender: '♂ Male (Manual)',
+        genderCategory: 'male',
+        isManual: true,
+        manualGender: 'male',
+        autoDetected: auto
+      };
+    }
+
     if (record?.manualGender === 'other') {
       return {
-        gender: 'Non-Female (Manual)',
-        shortGender: 'Non-Female',
-        isFemale: false,
+        gender: '⚧ Other (Manual)',
+        genderCategory: 'other',
         isManual: true,
         manualGender: 'other',
         autoDetected: auto
@@ -303,8 +325,7 @@
 
     return {
       gender: auto.gender,
-      shortGender: auto.gender || (auto.isFemale === true ? 'F' : (auto.isFemale === false ? 'Other' : null)),
-      isFemale: auto.isFemale,
+      genderCategory: auto.genderCategory,
       isManual: false,
       manualGender: null,
       autoDetected: auto
@@ -409,6 +430,10 @@
         merged.cardViewMode = saved.cardToolbarMode;
       }
 
+      if (!saved.genderFilter && typeof saved.filterFemaleOnly === 'boolean') {
+        merged.genderFilter = saved.filterFemaleOnly ? 'female' : 'all';
+      }
+
       if (!Array.isArray(merged.highlightRules) || merged.highlightRules.length === 0) {
         merged.highlightRules = JSON.parse(JSON.stringify(DEFAULT_HIGHLIGHT_RULES));
       } else {
@@ -470,7 +495,7 @@
         username: null,
         age: null,
         gender: null,
-        isFemale: null,
+        genderCategory: null,
         manualGender: null,
         genderRole: null,
         location: null,
@@ -496,25 +521,32 @@
       if (Object.prototype.hasOwnProperty.call(patch, 'manualGender')) {
         if (patch.manualGender === 'female') {
           next.manualGender = 'female';
-          next.isFemale = true;
+          next.genderCategory = 'female';
           next.gender = '♀ Female (Manual)';
+        } else if (patch.manualGender === 'male') {
+          next.manualGender = 'male';
+          next.genderCategory = 'male';
+          next.gender = '♂ Male (Manual)';
         } else if (patch.manualGender === 'other') {
           next.manualGender = 'other';
-          next.isFemale = false;
-          next.gender = 'Non-Female (Manual)';
+          next.genderCategory = 'other';
+          next.gender = '⚧ Other (Manual)';
         } else {
           next.manualGender = null;
           const cached = this.getBioCache()[key] || null;
           const auto = inferAutoGender({}, cached);
-          next.isFemale = auto.isFemale;
+          next.genderCategory = auto.genderCategory;
           next.gender = auto.gender;
         }
       } else if (next.manualGender === 'female') {
-        next.isFemale = true;
+        next.genderCategory = 'female';
         next.gender = '♀ Female (Manual)';
+      } else if (next.manualGender === 'male') {
+        next.genderCategory = 'male';
+        next.gender = '♂ Male (Manual)';
       } else if (next.manualGender === 'other') {
-        next.isFemale = false;
-        next.gender = 'Non-Female (Manual)';
+        next.genderCategory = 'other';
+        next.gender = '⚧ Other (Manual)';
       }
 
       db[key] = next;
@@ -633,10 +665,7 @@
       ].filter(Boolean);
 
       const combinedPositiveText = Array.from(new Set(positiveParts)).join(' \n ').slice(0, 24000);
-
-      const nextIsFemale = typeof incoming.isFemale === 'boolean'
-        ? incoming.isFemale
-        : (typeof prev.isFemale === 'boolean' ? prev.isFemale : null);
+      const nextGenderCategory = incoming.genderCategory || prev.genderCategory || null;
 
       const nextEntry = {
         username: username || prev.username || null,
@@ -649,7 +678,7 @@
         sections: nextSections,
         age: incoming.age ?? prev.age ?? null,
         gender: incoming.gender || prev.gender || null,
-        isFemale: nextIsFemale,
+        genderCategory: nextGenderCategory,
         genderRole: incoming.genderRole || prev.genderRole || null,
         location: incoming.location || prev.location || null,
         relationships: incoming.relationships || prev.relationships || null,
@@ -674,7 +703,7 @@
 
       if (!u.manualGender) {
         userPatch.gender = nextEntry.gender || u.gender || null;
-        userPatch.isFemale = typeof nextEntry.isFemale === 'boolean' ? nextEntry.isFemale : u.isFemale;
+        userPatch.genderCategory = nextEntry.genderCategory || u.genderCategory || null;
       }
 
       this.setUser(key, userPatch);
@@ -868,7 +897,7 @@
     return {
       age,
       gender: classified.gender,
-      isFemale: classified.isFemale,
+      genderCategory: classified.genderCategory,
       genderRole,
       location: locationParts.length > 0 ? locationParts.slice(0, 2).join(', ') : null,
       relationships,
@@ -1127,23 +1156,33 @@
     let node;
     while ((node = walker.nextNode())) {
       const tag = node.tagName;
-      if (/^H[1-6]$/.test(tag) || tag === 'STRONG' || tag === 'DT') {
-        const label = (node.textContent || '').trim().toLowerCase();
-        if (/limit|hard\s*no|won['’]?t|dislikes?/i.test(label)) {
-          currentBucket = 'limits';
-        } else if (/into|curious|giving|receiving|likes?|favou?rites?/i.test(label)) {
-          currentBucket = 'into';
-        }
-      } else if (tag === 'A') {
-        const href = node.getAttribute('href') || '';
-        if (href.startsWith('/fetishes/') || href.startsWith('/kinks/') || href.startsWith('/tags/')) {
-          const item = (node.textContent || '').replace(/\s+/g, ' ').trim();
-          if (item && item.length < 60) {
-            if (currentBucket === 'limits') {
-              if (!limits.includes(item)) limits.push(item);
-            } else {
-              if (!into.includes(item)) into.push(item);
+      if (tag === 'A' || (node.closest && node.closest('a'))) {
+        if (tag === 'A') {
+          const href = node.getAttribute('href') || '';
+          if (href.startsWith('/fetishes/') || href.startsWith('/kinks/') || href.startsWith('/tags/')) {
+            const item = (node.textContent || '').replace(/\s+/g, ' ').trim();
+            if (item && item.length < 60 && !/^(edit|learn more|see all|show more)$/i.test(item)) {
+              if (currentBucket === 'limits') {
+                if (!limits.includes(item)) limits.push(item);
+              } else {
+                if (!into.includes(item)) into.push(item);
+              }
             }
+          }
+        }
+        continue;
+      }
+
+      // Check section headers (semantic headings or leaf label elements like <div>Limits</div>)
+      const isHeadingTag = /^H[1-6]$/.test(tag) || tag === 'STRONG' || tag === 'DT' || tag === 'B';
+      const isLeafLabel = node.children.length === 0;
+      if (isHeadingTag || isLeafLabel) {
+        const label = (node.textContent || '').replace(/\s+/g, ' ').trim();
+        if (label.length >= 3 && label.length <= 28) {
+          if (/^(hard\s+|soft\s+)?limits?:?$/i.test(label) || /^not\s+into:?$/i.test(label)) {
+            currentBucket = 'limits';
+          } else if (/^(into|curious(\s+about)?|giving|receiving|favou?rites?|likes?|kinks|fetishes):?$/i.test(label)) {
+            currentBucket = 'into';
           }
         }
       }
@@ -1201,7 +1240,7 @@
         headerText: '',
         age: null,
         gender: null,
-        isFemale: null,
+        genderCategory: null,
         genderRole: null,
         location: null,
         relationships: null,
@@ -1213,7 +1252,7 @@
     const profileHeader = findProfileHeaderElement();
     const demos = profileHeader
       ? parseDemographicsFromContainer(profileHeader)
-      : { age: null, gender: null, isFemale: null, genderRole: null, location: null, relationships: null, lookingFor: null };
+      : { age: null, gender: null, genderCategory: null, genderRole: null, location: null, relationships: null, lookingFor: null };
 
     let headerText = '';
     if (profileHeader) {
@@ -1283,7 +1322,7 @@
       headerText,
       age: demos.age,
       gender: demos.gender,
-      isFemale: demos.isFemale,
+      genderCategory: demos.genderCategory,
       genderRole: demos.genderRole,
       location: demos.location,
       relationships: demos.relationships,
@@ -1295,6 +1334,17 @@
   // =========================================================================
   // 6. RULE MATCHING, LIMIT CONFLICTS & DEMOGRAPHIC FILTERING
   // =========================================================================
+  function getFetishIntoSearchText(cachedBio) {
+    if (!cachedBio) return '';
+    if (Array.isArray(cachedBio.fetishesInto) && cachedBio.fetishesInto.length > 0) {
+      return cachedBio.fetishesInto.join(' | ');
+    }
+    if (cachedBio.sections && typeof cachedBio.sections.fetishesInto === 'string' && cachedBio.sections.fetishesInto.trim()) {
+      return cachedBio.sections.fetishesInto;
+    }
+    return '';
+  }
+
   function findSimpleMatches(text, keywords) {
     const lower = (text || '').toLowerCase();
     const seen = new Set();
@@ -1391,9 +1441,11 @@
     return age < min || age > max;
   }
 
-  function isGenderRejected(isFemale, settings) {
-    if (!settings.filterFemaleOnly) return false;
-    return isFemale === false;
+  function isGenderRejected(genderCategory, settings) {
+    const target = settings.genderFilter || 'all';
+    if (target === 'all') return false;
+    if (!genderCategory) return false;
+    return genderCategory !== target;
   }
 
   function isLocalPdx(entryOrDemos) {
@@ -1415,7 +1467,7 @@
       tooltipLines.push(`⚠ Limits: ${limitConflicts.map(c => c.keyword).join(', ')}`);
     }
     if (excludedHits.length > 0) {
-      tooltipLines.push(`Excludes: -${excludedHits.join(', -')}`);
+      tooltipLines.push(`Red kinks (Fetishes): -${excludedHits.join(', -')}`);
     }
     wrap.title = tooltipLines.join(' • ');
 
@@ -1440,14 +1492,22 @@
     return parts.join(' • ');
   }
 
-  function createDemographicPill(age, gender, genderRole, location, isManualGender = false) {
+  function createDemographicPill(age, gender, genderRole, location, isManualGender = false, genderCategory = null) {
     const summary = formatDemographicSummary(age, gender, genderRole, location, isManualGender);
     if (!summary) return null;
 
     const pill = document.createElement('span');
-    pill.style.cssText = isManualGender
-      ? 'font-size:11px;color:#f9a8d4;background:rgba(244,114,182,0.14);border:1px solid rgba(244,114,182,0.35);padding:1px 6px;border-radius:4px;font-weight:500;'
-      : 'font-size:11px;color:#cbd5e1;background:rgba(148,163,184,0.12);border:1px solid rgba(148,163,184,0.25);padding:1px 6px;border-radius:4px;font-weight:500;';
+    if (isManualGender) {
+      if (genderCategory === 'male') {
+        pill.style.cssText = 'font-size:11px;color:#93c5fd;background:rgba(59,130,246,0.16);border:1px solid rgba(59,130,246,0.38);padding:1px 6px;border-radius:4px;font-weight:500;';
+      } else if (genderCategory === 'other') {
+        pill.style.cssText = 'font-size:11px;color:#d8b4fe;background:rgba(168,85,247,0.16);border:1px solid rgba(168,85,247,0.38);padding:1px 6px;border-radius:4px;font-weight:500;';
+      } else {
+        pill.style.cssText = 'font-size:11px;color:#f9a8d4;background:rgba(244,114,182,0.14);border:1px solid rgba(244,114,182,0.35);padding:1px 6px;border-radius:4px;font-weight:500;';
+      }
+    } else {
+      pill.style.cssText = 'font-size:11px;color:#cbd5e1;background:rgba(148,163,184,0.12);border:1px solid rgba(148,163,184,0.25);padding:1px 6px;border-radius:4px;font-weight:500;';
+    }
     pill.textContent = summary;
     return pill;
   }
@@ -1458,22 +1518,24 @@
 
     if (mg === 'female') {
       sel.style.cssText = 'background:rgba(244,114,182,0.18);color:#f9a8d4;border:1px solid #db2777;border-radius:5px;padding:2px 5px;font-size:11px;cursor:pointer;font-weight:600;';
+    } else if (mg === 'male') {
+      sel.style.cssText = 'background:rgba(59,130,246,0.18);color:#93c5fd;border:1px solid #2563eb;border-radius:5px;padding:2px 5px;font-size:11px;cursor:pointer;font-weight:600;';
     } else if (mg === 'other') {
-      sel.style.cssText = 'background:rgba(248,113,113,0.18);color:#fca5a5;border:1px solid #dc2626;border-radius:5px;padding:2px 5px;font-size:11px;cursor:pointer;font-weight:600;';
+      sel.style.cssText = 'background:rgba(168,85,247,0.18);color:#d8b4fe;border:1px solid #7e22ce;border-radius:5px;padding:2px 5px;font-size:11px;cursor:pointer;font-weight:600;';
     } else {
       sel.style.cssText = 'background:#202024;color:#a1a1aa;border:1px solid #3f3f46;border-radius:5px;padding:2px 5px;font-size:11px;cursor:pointer;';
     }
 
     sel.title = 'Override Gender (for profiles that do not state gender)';
 
-    const autoHint = autoGenderObj?.isFemale === true
-      ? '♀'
-      : (autoGenderObj?.isFemale === false ? 'Other' : '?');
+    const cat = autoGenderObj?.genderCategory;
+    const autoHint = cat === 'female' ? '♀' : (cat === 'male' ? '♂' : (cat === 'other' ? '⚧' : '?'));
 
     const opts = [
-      { val: '',       text: compact ? `G:${autoHint}` : `Gender: Auto (${autoHint})` },
-      { val: 'female', text: compact ? '♀ F' : '♀ Female' },
-      { val: 'other',  text: compact ? '✕ Other' : '✕ Non-Female' }
+      { val: '',       text: compact ? `G:${autoHint}` : `Gender: Auto (${autoHint})`, color: '#e4e4e7' },
+      { val: 'female', text: compact ? '♀ F' : '♀ Female',                           color: '#f9a8d4' },
+      { val: 'male',   text: compact ? '♂ M' : '♂ Male',                             color: '#93c5fd' },
+      { val: 'other',  text: compact ? '⚧ Oth' : '⚧ Other',                          color: '#d8b4fe' }
     ];
 
     for (const o of opts) {
@@ -1481,7 +1543,7 @@
       optEl.value = o.val;
       optEl.textContent = o.text;
       optEl.style.background = '#18181b';
-      optEl.style.color = o.val === 'female' ? '#f9a8d4' : (o.val === 'other' ? '#fca5a5' : '#e4e4e7');
+      optEl.style.color = o.color;
       if (mg === o.val) optEl.selected = true;
       sel.appendChild(optEl);
     }
@@ -1536,7 +1598,6 @@
     }
   }
 
-  // Safely hides or restores native FetLife child elements inside a card container
   function setContainerNativeContentHidden(container, shouldHide) {
     for (const child of container.children) {
       if (child.classList && child.classList.contains('flx-toolbar')) continue;
@@ -1572,10 +1633,8 @@
     bar.className = 'flx-toolbar';
 
     if (isMinimal) {
-      // Single-line minimal strip: no pills, prioritizes speed & colored dots
       bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin:2px 0;padding:4px 8px;background:rgba(22,22,27,0.9);border:1px solid #2e2e38;border-radius:6px;position:relative;z-index:5;font-family:system-ui,-apple-system,sans-serif;';
     } else if (isCompact) {
-      // Unobtrusive inline bar in compact mode so original card content stays front-and-center
       bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin:0 0 4px 0;padding:2px 0;background:transparent;border:none;position:relative;z-index:5;font-family:system-ui,-apple-system,sans-serif;';
     } else if (isStickyTop) {
       bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin:0 0 6px 0;padding:5px 8px;position:sticky;top:var(--flx-sticky-top, 62px);z-index:25;background:rgba(20,20,25,0.94);backdrop-filter:blur(8px);border:1px solid #30303a;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.45);font-family:system-ui,-apple-system,sans-serif;';
@@ -1600,7 +1659,7 @@
       };
       if (!cur.manualGender && !Object.prototype.hasOwnProperty.call(patch, 'manualGender')) {
         baseMeta.gender = (demos && demos.gender) || cur.gender || null;
-        baseMeta.isFemale = typeof demos?.isFemale === 'boolean' ? demos.isFemale : cur.isFemale;
+        baseMeta.genderCategory = (demos && demos.genderCategory) || cur.genderCategory || null;
       }
       Store.setUser(userKey, Object.assign(baseMeta, patch));
       onUpdate();
@@ -1608,7 +1667,6 @@
 
     const baseBtnStyle = 'background:#202024;color:#d4d4d8;border:1px solid #3f3f46;border-radius:5px;padding:2px 7px;cursor:pointer;font-size:11px;line-height:1.45;transition:background 0.15s,border-color 0.15s;';
 
-    // Per-Card Expand / Minimize Toggle Button
     if (!isProfileBar && typeof onToggleCardView === 'function') {
       const viewToggleBtn = document.createElement('button');
       viewToggleBtn.type = 'button';
@@ -1626,7 +1684,6 @@
       bar.appendChild(viewToggleBtn);
     }
 
-    // In Minimal view, render a clean clickable /username link (demographics shown in hover tooltip, no pills)
     if (isMinimal) {
       const handleText = displayHandle || userKey;
       const userLink = document.createElement('a');
@@ -1722,7 +1779,6 @@
 
     bar.append(starBtn, stageSelect, genderSelect, passBtn, noteBtn);
 
-    // Text metadata pills and inline note boxes only render in Full mode (or on the Profile Page bar)
     if (isProfileBar || viewMode === 'full') {
       if (record.lastContacted && record.status !== 'hidden') {
         const contacted = document.createElement('span');
@@ -1748,16 +1804,14 @@
   }
 
   function appendMatchBadges(toolbar, cachedBio, demos, missingAbout, ageRejected, genderRejected, ruleHits, limitConflicts, excludedHits, viewMode) {
-    // Always keep the little colored category dots in Full, Compact, AND Minimal modes
     const dotsCluster = createMatchDotsCluster(ruleHits, limitConflicts, excludedHits);
     if (dotsCluster) {
       toolbar.appendChild(dotsCluster);
     }
 
-    // Hide all larger text pills/badges in Compact and Minimal modes to prioritize original card content
     if (viewMode !== 'full') return;
 
-    const demoPill = createDemographicPill(demos?.age, demos?.gender, demos?.genderRole, demos?.location, demos?.isManualGender);
+    const demoPill = createDemographicPill(demos?.age, demos?.gender, demos?.genderRole, demos?.location, demos?.isManualGender, demos?.genderCategory);
     if (demoPill) {
       toolbar.appendChild(demoPill);
     }
@@ -1819,6 +1873,7 @@
     excludedHits.forEach((kw) => {
       const badge = document.createElement('span');
       badge.style.cssText = 'font-size:11px;padding:1px 6px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
+      badge.title = 'Red kink found in Fetishes (Into) list';
       badge.textContent = `-${kw}`;
       toolbar.appendChild(badge);
     });
@@ -1915,17 +1970,21 @@
 
       if (action === 'cycleGender') {
         const cur = Store.getUser(userKey);
-        const nextManual = !cur.manualGender ? 'female' : (cur.manualGender === 'female' ? 'other' : null);
+        const cycleOrder = [null, 'female', 'male', 'other'];
+        const curIdx = cycleOrder.indexOf(cur.manualGender || null);
+        const nextManual = cycleOrder[(curIdx + 1) % cycleOrder.length];
         Store.setUser(userKey, { username: handle, manualGender: nextManual });
         runAll();
         const remaining = this.getVisibleCards();
         if (remaining.length > 0) {
           this.focusCard(Math.min(this.activeIndex, remaining.length - 1));
         }
-        const msg = nextManual === 'female'
-          ? `♀ Set /${handle} as Female`
-          : (nextManual === 'other' ? `✕ Set /${handle} as Non-Female` : `Reset /${handle} gender to Auto`);
-        this.showToast(msg);
+        const labels = {
+          female: `♀ Set /${handle} as Female`,
+          male: `♂ Set /${handle} as Male`,
+          other: `⚧ Set /${handle} as Other`
+        };
+        this.showToast(labels[nextManual] || `Reset /${handle} gender to Auto`);
         return;
       }
 
@@ -1999,7 +2058,7 @@
     const mergedDemos = {
       age: identity.demographics?.age ?? record.age ?? cachedBio?.age ?? null,
       gender: resolvedGender.gender,
-      isFemale: resolvedGender.isFemale,
+      genderCategory: resolvedGender.genderCategory,
       isManualGender: resolvedGender.isManual,
       autoDetected: resolvedGender.autoDetected,
       genderRole: identity.demographics?.genderRole || record.genderRole || cachedBio?.genderRole || null,
@@ -2010,7 +2069,7 @@
 
     const missingAbout = Boolean(settings.hideNoAbout && cachedBio && cachedBio.hasAbout === false);
     const ageRejected = isAgeOutOfRange(mergedDemos.age, settings);
-    const genderRejected = isGenderRejected(mergedDemos.isFemale, settings);
+    const genderRejected = isGenderRejected(mergedDemos.genderCategory, settings);
 
     if (!container.dataset.flxRawItemText) {
       const clone = container.cloneNode(true);
@@ -2018,9 +2077,10 @@
       container.dataset.flxRawItemText = (clone.textContent || '').replace(/\s+/g, ' ').trim();
     }
     const itemText = container.dataset.flxRawItemText;
-    const combinedPositiveText = bioText ? `${itemText}\n${bioText}` : itemText;
 
-    const excludedHits = findSimpleMatches(combinedPositiveText, settings.excludeKeywords);
+    // Red kinks / excludes ONLY check the Fetishes (Into) list—never About/profile/post text
+    const fetishIntoText = getFetishIntoSearchText(cachedBio);
+    const excludedHits = findSimpleMatches(fetishIntoText, settings.excludeKeywords);
     const ruleHits = findRuleMatches(itemText, bioText, settings.highlightRules);
     const limitConflicts = cachedBio ? findLimitConflicts(cachedBio.fetishesLimits, settings.highlightRules) : [];
 
@@ -2037,7 +2097,7 @@
       hasAbout: cachedBio ? cachedBio.hasAbout : null,
       showHidden: settings.showHidden,
       hideNoAbout: settings.hideNoAbout,
-      filterFemaleOnly: settings.filterFemaleOnly,
+      genderFilter: settings.genderFilter,
       filterByAge: settings.filterByAge,
       minAge: settings.minAge,
       maxAge: settings.maxAge,
@@ -2062,7 +2122,6 @@
     const isFilteredOut = record.status === 'hidden' || excludedHits.length > 0 || missingAbout || ageRejected || genderRejected;
     applyCardAccentStyle(container, record.status, ruleHits, isFilteredOut, settings);
 
-    // Toggle native FetLife card children for Minimal vs. Compact/Full views
     setContainerNativeContentHidden(container, effectiveViewMode === 'minimal');
 
     const oldBar = container.querySelector('.flx-toolbar');
@@ -2193,10 +2252,10 @@
       manualGender: latestUser.manualGender,
       note: latestUser.note,
       lastContacted: latestUser.lastContacted,
-      isFemale: latestUser.isFemale,
+      genderCategory: latestUser.genderCategory,
       stickyProfileBar: currentSettings.stickyProfileBar,
       hideNoAbout: currentSettings.hideNoAbout,
-      filterFemaleOnly: currentSettings.filterFemaleOnly,
+      genderFilter: currentSettings.genderFilter,
       filterByAge: currentSettings.filterByAge,
       minAge: currentSettings.minAge,
       maxAge: currentSettings.maxAge,
@@ -2219,7 +2278,7 @@
       const demos = {
         age: u.age ?? latestBio?.age ?? null,
         gender: resolvedGender.gender,
-        isFemale: resolvedGender.isFemale,
+        genderCategory: resolvedGender.genderCategory,
         isManualGender: resolvedGender.isManual,
         autoDetected: resolvedGender.autoDetected,
         genderRole: u.genderRole || latestBio?.genderRole || null,
@@ -2261,12 +2320,13 @@
       toolbar.style.flex = '1';
 
       const scanText = latestBio ? latestBio.text : '';
-      const excludedHits = findSimpleMatches(scanText, settings.excludeKeywords);
+      const fetishIntoText = getFetishIntoSearchText(latestBio);
+      const excludedHits = findSimpleMatches(fetishIntoText, settings.excludeKeywords);
       const ruleHits = findRuleMatches('', scanText, settings.highlightRules);
       const limitConflicts = latestBio ? findLimitConflicts(latestBio.fetishesLimits, settings.highlightRules) : [];
       const missingAbout = Boolean(settings.hideNoAbout && latestBio && latestBio.hasAbout === false);
       const ageRejected = isAgeOutOfRange(demos.age, settings);
-      const genderRejected = isGenderRejected(demos.isFemale, settings);
+      const genderRejected = isGenderRejected(demos.genderCategory, settings);
 
       appendMatchBadges(toolbar, latestBio, demos, missingAbout, ageRejected, genderRejected, ruleHits, limitConflicts, excludedHits, 'full');
 
@@ -2361,9 +2421,10 @@
       const resolvedGender = resolveEffectiveGender(record, cachedBio);
 
       const scanText = cachedBio ? cachedBio.text : '';
+      const fetishIntoText = getFetishIntoSearchText(cachedBio);
       const ruleHits = findRuleMatches('', scanText, settings.highlightRules);
       const limitConflicts = cachedBio ? findLimitConflicts(cachedBio.fetishesLimits, settings.highlightRules) : [];
-      const excludedHits = findSimpleMatches(scanText, settings.excludeKeywords);
+      const excludedHits = findSimpleMatches(fetishIntoText, settings.excludeKeywords);
       const sharedGroups = getSharedOrNotableGroups(cachedBio?.groups || record.groups || []);
 
       const sig = JSON.stringify({
@@ -2413,7 +2474,8 @@
         resolvedGender.gender,
         record.genderRole || cachedBio?.genderRole || null,
         record.location || cachedBio?.location || null,
-        resolvedGender.isManual
+        resolvedGender.isManual,
+        resolvedGender.genderCategory
       );
       if (demoPill) left.appendChild(demoPill);
 
@@ -2532,6 +2594,7 @@
         for (const kw of excludedHits) {
           const p = document.createElement('span');
           p.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:3px;background:rgba(239,68,68,0.18);color:#fca5a5;border:1px solid #b91c1c;';
+          p.title = 'Red kink found in Fetishes (Into) list';
           p.textContent = `-${kw}`;
           badgeRow.appendChild(p);
         }
@@ -2570,7 +2633,7 @@
     isOpen: false,
     filterStatus: 'all',
     filterCategory: 'all',
-    filterGender: 'female',
+    filterGender: 'all', // 'all' | 'female' | 'male' | 'other' | 'unknown'
     filterRel: 'all',
     hideExcludes: false,
     localOnly: false,
@@ -2616,9 +2679,10 @@
         const groups = (c && Array.isArray(c.groups) && c.groups.length > 0) ? c.groups : (u.groups || []);
         const sharedGroups = getSharedOrNotableGroups(groups);
 
+        const fetishIntoText = getFetishIntoSearchText(c);
         const ruleHits = findRuleMatches('', bioText, settings.highlightRules);
         const limitConflicts = findLimitConflicts(fetishesLimits, settings.highlightRules);
-        const excludedHits = findSimpleMatches(bioText, settings.excludeKeywords);
+        const excludedHits = findSimpleMatches(fetishIntoText, settings.excludeKeywords);
 
         const daysSinceContact = daysSinceIsoDate(u.lastContacted);
         const followUpDue = Boolean(
@@ -2648,7 +2712,7 @@
           recentStamp,
           age,
           gender: resolvedGender.gender,
-          isFemale: resolvedGender.isFemale,
+          genderCategory: resolvedGender.genderCategory,
           isManualGender: resolvedGender.isManual,
           manualGender: u.manualGender || null,
           genderRole,
@@ -2685,7 +2749,7 @@
         username: null,
         age: null,
         gender: null,
-        isFemale: null,
+        genderCategory: null,
         manualGender: null,
         genderRole: null,
         location: null,
@@ -2722,6 +2786,9 @@
         if (e.limitConflicts.length > 0) {
           lines.push(`* **Limit Conflicts:** ${e.limitConflicts.map(c => c.keyword).join(', ')}`);
         }
+        if (e.excludedHits.length > 0) {
+          lines.push(`* **Red Kinks (Fetishes):** ${e.excludedHits.join(', ')}`);
+        }
         if (e.sharedGroups.length > 0) {
           lines.push(`* **Shared/Local Groups:** ${e.sharedGroups.join(', ')}`);
         }
@@ -2741,7 +2808,7 @@
     open() {
       if (this.isOpen) return;
       this.isOpen = true;
-      this.filterGender = Store.getSettings().filterFemaleOnly ? 'female' : 'all';
+      this.filterGender = Store.getSettings().genderFilter || 'all';
       this.renderModal();
       document.addEventListener('keydown', this._onKeyDown);
     },
@@ -2860,7 +2927,8 @@
             .gender-seg { display: inline-flex; border: 1px solid #3a3a44; border-radius: 5px; overflow: hidden; }
             .gender-seg button { border: none; border-radius: 0; padding: 3px 7px; font-size: 11px; background: #1d1d24; }
             .gender-seg button.g-female { background: rgba(244,114,182,0.22); color: #f9a8d4; font-weight: 600; }
-            .gender-seg button.g-other { background: rgba(248,113,113,0.22); color: #fca5a5; font-weight: 600; }
+            .gender-seg button.g-male { background: rgba(59,130,246,0.22); color: #93c5fd; font-weight: 600; }
+            .gender-seg button.g-other { background: rgba(168,85,247,0.22); color: #d8b4fe; font-weight: 600; }
             .gender-seg button.g-auto { background: #2c2c36; color: #e4e4e7; font-weight: 600; }
             .note-row { display: flex; gap: 8px; align-items: flex-start; }
             .note-area {
@@ -2903,10 +2971,11 @@
                 <div class="control-row">
                   <input type="text" class="search-input" id="crm-search" placeholder="Search handle, location, groups, notes, About, or fetishes...">
                   <select id="crm-gender-filter" title="Filter by Gender">
-                    <option value="female">♀ Female Only</option>
                     <option value="all">All Genders</option>
+                    <option value="female">♀ Female Only</option>
+                    <option value="male">♂ Male Only</option>
+                    <option value="other">⚧ NB / Trans / Other</option>
                     <option value="unknown">Gender Unknown</option>
-                    <option value="other">Other / Non-Female</option>
                   </select>
                   <select id="crm-rel-filter" title="Filter by Relationship Status">
                     <option value="all">All Relationships</option>
@@ -2921,7 +2990,7 @@
                   <select id="crm-cat-filter" title="Filter by Content Category">
                     <option value="all">All Categories</option>
                     ${settings.highlightRules.map(r => `<option value="rule:${r.id || r.label}">${r.label}</option>`).join('')}
-                    <option value="excluded">Has Exclude Match</option>
+                    <option value="excluded">Has Red Kink (Fetishes)</option>
                     <option value="conflict">Has Limit Conflict</option>
                   </select>
                   <select id="crm-sort" title="Sort order">
@@ -2930,7 +2999,7 @@
                     <option value="recent">Sort: Most Recent</option>
                     <option value="alpha">Sort: Username (A–Z)</option>
                   </select>
-                  <button type="button" class="toggle-pill" id="crm-tgl-excludes">🚫 Hide Excludes</button>
+                  <button type="button" class="toggle-pill" id="crm-tgl-excludes">🚫 Hide Red Kinks</button>
                   <button type="button" class="toggle-pill" id="crm-tgl-local">📍 Local PDX Only</button>
                   <button type="button" class="toggle-pill" id="crm-tgl-followup">⏰ Follow-Up Due</button>
                 </div>
@@ -3105,9 +3174,10 @@
         if (this.filterStatus === 'noAbout' && !entry.noAbout) return false;
         if (this.filterStatus === 'hidden' && entry.status !== 'hidden') return false;
 
-        if (this.filterGender === 'female' && entry.isFemale !== true) return false;
-        if (this.filterGender === 'unknown' && entry.isFemale !== null) return false;
-        if (this.filterGender === 'other' && entry.isFemale !== false) return false;
+        if (this.filterGender === 'female' && entry.genderCategory !== 'female') return false;
+        if (this.filterGender === 'male' && entry.genderCategory !== 'male') return false;
+        if (this.filterGender === 'other' && entry.genderCategory !== 'other') return false;
+        if (this.filterGender === 'unknown' && entry.genderCategory !== null) return false;
 
         if (this.filterRel === 'single') {
           if (!entry.relationships || !/single|solo|unpartnered|available/i.test(entry.relationships)) return false;
@@ -3226,7 +3296,7 @@
         link.textContent = `/${entry.displayHandle}`;
         leftInfo.appendChild(link);
 
-        const demoPill = createDemographicPill(entry.age, entry.gender, entry.genderRole, entry.location, entry.isManualGender);
+        const demoPill = createDemographicPill(entry.age, entry.gender, entry.genderRole, entry.location, entry.isManualGender, entry.genderCategory);
         if (demoPill) leftInfo.appendChild(demoPill);
 
         const dots = createMatchDotsCluster(entry.ruleHits, entry.limitConflicts, entry.excludedHits);
@@ -3295,6 +3365,7 @@
         for (const kw of entry.excludedHits) {
           const b = document.createElement('span');
           b.className = 'pill pill-ex';
+          b.title = 'Red kink found in Fetishes (Into) list';
           b.textContent = `-${kw}`;
           badges.appendChild(b);
         }
@@ -3309,9 +3380,10 @@
         genderSeg.title = 'Set Gender Override';
 
         const genderOpts = [
-          { val: null,     label: 'Auto',       activeCls: 'g-auto' },
-          { val: 'female', label: '♀ Female',   activeCls: 'g-female' },
-          { val: 'other',  label: '✕ Other',    activeCls: 'g-other' }
+          { val: null,     label: 'Auto',     activeCls: 'g-auto' },
+          { val: 'female', label: '♀ Female', activeCls: 'g-female' },
+          { val: 'male',   label: '♂ Male',   activeCls: 'g-male' },
+          { val: 'other',  label: '⚧ Other',  activeCls: 'g-other' }
         ];
         for (const gOpt of genderOpts) {
           const gBtn = document.createElement('button');
@@ -3679,11 +3751,16 @@
                 </label>
               </div>
               <div class="grid2">
+                <label>Gender Filter
+                  <select id="in-gender-filter">
+                    <option value="all">All Genders (No Filter)</option>
+                    <option value="female">♀ Female Only</option>
+                    <option value="male">♂ Male Only</option>
+                    <option value="other">⚧ NB / Trans / Other</option>
+                  </select>
+                </label>
                 <label>Dim Opacity (<span id="opacity-val">18%</span>)
                   <input type="range" id="in-opacity" min="0.05" max="0.75" step="0.05">
-                </label>
-                <label>Cache Retention (Days)
-                  <input type="number" id="in-ttl" min="1" max="90">
                 </label>
               </div>
               <div class="grid3">
@@ -3697,8 +3774,8 @@
                   <input type="number" id="in-max-age" min="18" max="99">
                 </label>
               </div>
-              <label class="inline-label">
-                <input type="checkbox" id="in-female-only"> Female only (actual females)
+              <label>Cache Retention (Days)
+                <input type="number" id="in-ttl" min="1" max="90">
               </label>
               <label class="inline-label">
                 <input type="checkbox" id="in-sticky-profile"> Pin profile bar to top while scrolling
@@ -3720,7 +3797,7 @@
                 </div>
               </div>
               <div id="rules-list"></div>
-              <label style="margin-top:4px;">Exclude Keywords (comma-separated, ignores Limits)
+              <label style="margin-top:4px;">Red Kinks / Excludes (Fetishes "Into" list only — ignores About & Limits)
                 <input type="text" id="in-exclude">
               </label>
             </div>
@@ -3905,12 +3982,12 @@
         $('in-view-mode').value = s.cardViewMode || 'full';
         $('in-toolbar-pos').value = s.cardToolbarPosition || 'top-sticky';
         $('in-mode').value = s.hideMode;
+        $('in-gender-filter').value = s.genderFilter || 'all';
         $('in-opacity').value = s.dimOpacity;
         $('opacity-val').textContent = `${Math.round(s.dimOpacity * 100)}%`;
         $('in-age-filter').checked = Boolean(s.filterByAge);
         $('in-min-age').value = s.minAge;
         $('in-max-age').value = s.maxAge;
-        $('in-female-only').checked = Boolean(s.filterFemaleOnly);
         $('in-sticky-profile').checked = Boolean(s.stickyProfileBar);
         $('in-ttl').value = s.bioCacheTtlDays;
         $('in-notes').checked = Boolean(s.showNotesInline);
@@ -4031,11 +4108,11 @@
           cardViewMode: $('in-view-mode').value,
           cardToolbarPosition: $('in-toolbar-pos').value,
           hideMode: $('in-mode').value,
+          genderFilter: $('in-gender-filter').value,
           dimOpacity: parseFloat($('in-opacity').value) || 0.18,
           filterByAge: $('in-age-filter').checked,
           minAge: Math.max(18, parseInt($('in-min-age').value, 10) || 30),
           maxAge: Math.min(99, parseInt($('in-max-age').value, 10) || 45),
-          filterFemaleOnly: $('in-female-only').checked,
           stickyProfileBar: $('in-sticky-profile').checked,
           bioCacheTtlDays: Math.max(1, parseInt($('in-ttl').value, 10) || 14),
           showNotesInline: $('in-notes').checked,
