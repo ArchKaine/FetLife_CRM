@@ -111,12 +111,12 @@
     {
       id: 'tpl_writings',
       title: 'About + Writings Pointer',
-      body: "Hi {username} — appreciated what you shared in your About section. If you're curious where my head is at, I put together two short pieces in my Writings ('I want a family, not a playmate' and 'Dad Mode') that lay out what I'm looking for plainly. Would love to hear your thoughts if any of it resonates."
+      body: "Hello {username} — appreciated what you shared in your About section. If you're curious where my head is at, I put together two short pieces in my Writings ('I want a family, not a playmate. (Closed Vee): Where I am coming from.' and 'Dad Mode: The Reality of the Household (Building a Polyfidelity Vee)') that lay out what I'm looking for plainly. My profile also lays out what to expect and what I am looking for, in the interests of full disclosure. Would love to hear your thoughts if any of it resonates."
     },
     {
       id: 'tpl_coffee',
       title: 'Direct Quiet Café / Cocoa Invite',
-      body: "Hey {username} — I'm straightforward and not big on noisy crowds, so figured I'd reach out directly. Would you be up for a low-pressure coffee or hot cocoa sometime to see if our gears mesh?"
+      body: "Hey {username} — saw your profile and noticed we're both local to the PDX area. I skip the noisy munches in favor of my weekly yoga class and quiet rooms where you can actually hear yourself think, so if you're ever up for a low-stakes hello over hot cocoa or coffee at a quiet café (either one-on-one or with Michele along to say hi), let me know. No pressure at all—just wanted to reach out."
     }
   ];
 
