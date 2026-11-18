@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FetLife Local Cache Filter & CRM
 // @namespace    local.fl.enhancer
-// @version      1.12.2
+// @version      1.12.3
 // @description  Zero-fetch passive profile & fetish caching, main-profile/About Limits extraction, self-profile kink/limit auto-sync, scoped sub-profile card differentiation, accurate age/gender filtering, and searchable CRM modal
 // @match        https://fetlife.com/*
 // @match        https://*.fetlife.com/*
@@ -412,15 +412,73 @@
     return actual.toLowerCase() === configuredCombo.trim().toLowerCase();
   }
 
-  function isEditableTarget(e) {
-    const path = typeof e.composedPath === 'function' ? e.composedPath() : [e.target];
-    for (const el of path) {
-      if (!el || el.nodeType !== 1) continue;
-      const tag = el.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'LEXXY-EDITOR') return true;
-      if (el.isContentEditable) return true;
-    }
+  function isElementEditableNode(el) {
+    if (!el || el.nodeType !== 1) return false;
+    const tag = el.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'LEXXY-EDITOR') return true;
+    if (el.isContentEditable) return true;
+    const role = el.getAttribute && el.getAttribute('role');
+    if (role === 'textbox' || role === 'searchbox' || role === 'combobox') return true;
     return false;
+  }
+
+  function isEditableTarget(e) {
+    const path = (e && typeof e.composedPath === 'function') ? e.composedPath() : (e && e.target ? [e.target] : []);
+    for (const el of path) {
+      if (isElementEditableNode(el)) return true;
+    }
+
+    // Deep check activeElement across main document and our Shadow DOM roots
+    let active = document.activeElement;
+    while (active) {
+      if (isElementEditableNode(active)) return true;
+      if (active.shadowRoot && active.shadowRoot.activeElement) {
+        active = active.shadowRoot.activeElement;
+      } else {
+        break;
+      }
+    }
+
+    if (CrmModal.shadow && isElementEditableNode(CrmModal.shadow.activeElement)) return true;
+    if (Hud.shadow && isElementEditableNode(Hud.shadow.activeElement)) return true;
+
+    return false;
+  }
+
+  /**
+   * Prevents FetLife's native global shortcut listeners (like 'c' for Create/Comment)
+   * from seeing keystrokes typed inside Shadow DOM inputs/textareas and calling preventDefault()
+   * after the browser retargets event.target to the outer shadow host div.
+   */
+  function shieldShadowInputs(shadowRoot, onEscape = null) {
+    if (!shadowRoot) return;
+    for (const evtType of ['keydown', 'keypress', 'keyup']) {
+      shadowRoot.addEventListener(evtType, (e) => {
+        if (evtType === 'keydown' && e.key === 'Escape' && typeof onEscape === 'function') {
+          e.stopPropagation();
+          onEscape(e);
+          return;
+        }
+        const path = typeof e.composedPath === 'function' ? e.composedPath() : [e.target];
+        for (const el of path) {
+          if (isElementEditableNode(el)) {
+            // Allow Alt+C (or configured modifier shortcut) to toggle CRM even while focused in an input
+            if (evtType === 'keydown' && (e.altKey || e.ctrlKey || e.metaKey)) {
+              const kb = Store.getSettings().keybinds || DEFAULT_KEYBINDS;
+              if (kb.toggleCrm && matchesKeyCombo(e, kb.toggleCrm)) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (CrmModal.isOpen) CrmModal.close();
+                else CrmModal.open();
+                return;
+              }
+            }
+            e.stopPropagation();
+            return;
+          }
+        }
+      }, false);
+    }
   }
 
   function openProfileInBackgroundTab(url) {
@@ -3449,6 +3507,7 @@
           this.host.id = 'flx-crm-host';
           this.host.style.cssText = 'position:fixed;inset:0;z-index:2147483647;';
           this.shadow = this.host.attachShadow({ mode: 'open' });
+          shieldShadowInputs(this.shadow, () => this.close());
           (document.documentElement || document.body).appendChild(this.host);
         }
 
@@ -4265,6 +4324,7 @@
       this.applyPosition(settings.hudPosition);
 
       this.shadow = this.host.attachShadow({ mode: 'open' });
+      shieldShadowInputs(this.shadow);
       this.shadow.innerHTML = `
         <style>
           :host { all: initial; font-family: system-ui, -apple-system, sans-serif; font-size: 12px; color: #e4e4e7; }
@@ -4956,12 +5016,17 @@
   document.addEventListener('keydown', (e) => {
     if (Hud.capturingKeyAction) return;
 
+    const editing = isEditableTarget(e);
+    const hasModifier = e.altKey || e.ctrlKey || e.metaKey;
+
+    // Completely pause all command checking while editing a field unless a modifier key (Alt/Ctrl/Meta) is held
+    if (editing && !hasModifier) return;
+
     const settings = Store.getSettings();
     const kb = settings.keybinds || DEFAULT_KEYBINDS;
 
     if (kb.toggleCrm && matchesKeyCombo(e, kb.toggleCrm)) {
-      const hasModifier = e.altKey || e.ctrlKey || e.metaKey;
-      if (hasModifier || !isEditableTarget(e)) {
+      if (hasModifier || !editing) {
         e.preventDefault();
         if (CrmModal.isOpen) CrmModal.close();
         else CrmModal.open();
@@ -4969,7 +5034,7 @@
       }
     }
 
-    if (settings.paused || CrmModal.isOpen || isEditableTarget(e)) return;
+    if (settings.paused || CrmModal.isOpen || editing) return;
 
     if (kb.cycleView && matchesKeyCombo(e, kb.cycleView)) {
       e.preventDefault();
