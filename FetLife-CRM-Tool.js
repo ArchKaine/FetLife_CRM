@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FetLife Local Cache Filter & CRM
 // @namespace    local.fl.enhancer
-// @version      1.12.3
+// @version      1.12.4
 // @description  Zero-fetch passive profile & fetish caching, main-profile/About Limits extraction, self-profile kink/limit auto-sync, scoped sub-profile card differentiation, accurate age/gender filtering, and searchable CRM modal
 // @match        https://fetlife.com/*
 // @match        https://*.fetlife.com/*
@@ -428,7 +428,6 @@
       if (isElementEditableNode(el)) return true;
     }
 
-    // Deep check activeElement across main document and our Shadow DOM roots
     let active = document.activeElement;
     while (active) {
       if (isElementEditableNode(active)) return true;
@@ -445,11 +444,6 @@
     return false;
   }
 
-  /**
-   * Prevents FetLife's native global shortcut listeners (like 'c' for Create/Comment)
-   * from seeing keystrokes typed inside Shadow DOM inputs/textareas and calling preventDefault()
-   * after the browser retargets event.target to the outer shadow host div.
-   */
   function shieldShadowInputs(shadowRoot, onEscape = null) {
     if (!shadowRoot) return;
     for (const evtType of ['keydown', 'keypress', 'keyup']) {
@@ -462,7 +456,6 @@
         const path = typeof e.composedPath === 'function' ? e.composedPath() : [e.target];
         for (const el of path) {
           if (isElementEditableNode(el)) {
-            // Allow Alt+C (or configured modifier shortcut) to toggle CRM even while focused in an input
             if (evtType === 'keydown' && (e.altKey || e.ctrlKey || e.metaKey)) {
               const kb = Store.getSettings().keybinds || DEFAULT_KEYBINDS;
               if (kb.toggleCrm && matchesKeyCombo(e, kb.toggleCrm)) {
@@ -1806,7 +1799,6 @@
     const cleanScope = sanitizeProfileClone(scope, true);
     const nonFetishFullText = extractCopyBlockTextWithLines(cleanScope);
 
-    // Extract Limits only from About text (or About-tab profile text) so post titles/navigation don't pollute Limits
     const limitSourceFallback = (activeView === 'about' && !aboutText) ? nonFetishFullText : '';
     const extractedProfileLimits = extractLimitsFromProfileText(aboutText, limitSourceFallback);
     const combinedLimits = Array.from(new Set([
@@ -2712,6 +2704,12 @@
   }
 
   function enhancePostsAndCards() {
+    // Never inject profile-card toolbars onto individual message bubbles inside conversations/inbox
+    const path = window.location.pathname;
+    if (path.startsWith('/conversations') || path.startsWith('/inbox')) {
+      return 0;
+    }
+
     const settings = Store.getSettings();
     const root = document.getElementById('main-content') || document.body;
     const currentProfile = detectCurrentProfilePage();
@@ -2722,7 +2720,7 @@
     const seenContainers = new Set();
 
     for (const link of links) {
-      if (link.closest('nav, footer, aside, form, dialog, #feed-status-form, .flx-toolbar, .flx-profile-bar, .flx-chat-context')) continue;
+      if (link.closest('nav, footer, aside, form, dialog, #feed-status-form, #chat_dock, .flx-toolbar, .flx-profile-bar, .flx-chat-context')) continue;
       const closestHeader = link.closest('header');
       if (closestHeader && !closestHeader.closest('article')) continue;
 
@@ -3033,25 +3031,34 @@
   }
 
   function enhanceChatContext() {
+    // Do not touch chat DOM while user is actively typing in a composer
+    const active = document.activeElement;
+    if (active && isElementEditableNode(active) && active.closest('#chat_dock, #chat_dock_thread, #main-content')) {
+      return;
+    }
+
     const settings = Store.getSettings();
     const { selfId, selfUsername } = getSelfIdentity();
     const targets = [];
 
     const dockThread = document.getElementById('chat_dock_thread');
+    const dockContainer = document.getElementById('chat_dock') || dockThread;
     if (dockThread && dockThread.innerHTML.trim().length > 0) {
-      targets.push({ root: dockThread, mode: 'dock' });
+      targets.push({ scanRoot: dockThread, mountRoot: dockContainer, mode: 'dock' });
+    } else {
+      document.querySelectorAll('#chat_dock > .flx-chat-context').forEach(el => el.remove());
     }
 
     const path = window.location.pathname;
     if (path.startsWith('/inbox') || path.startsWith('/conversations')) {
       const mainContent = document.getElementById('main-content');
       if (mainContent) {
-        targets.push({ root: mainContent, mode: 'inbox' });
+        targets.push({ scanRoot: mainContent, mountRoot: mainContent, mode: 'inbox' });
       }
     }
 
     for (const target of targets) {
-      const anchors = target.root.getElementsByTagName('a');
+      const anchors = target.scanRoot.getElementsByTagName('a');
       let partner = null;
 
       for (const a of anchors) {
@@ -3095,7 +3102,7 @@
         excludedHits
       });
 
-      const existingStrip = target.root.querySelector('.flx-chat-context');
+      const existingStrip = target.mountRoot.querySelector('.flx-chat-context');
       if (existingStrip && existingStrip.dataset.flxSig === sig) continue;
       if (existingStrip) existingStrip.remove();
 
@@ -3103,8 +3110,8 @@
       strip.className = 'flx-chat-context';
       strip.dataset.flxSig = sig;
       strip.style.cssText = target.mode === 'dock'
-        ? 'width:100%;box-sizing:border-box;margin:6px 0;padding:7px 9px;background:#16161a;border:1px solid #383842;border-radius:6px;font-size:11px;color:#e4e4e7;font-family:system-ui,sans-serif;display:flex;flex-direction:column;gap:5px;z-index:20;position:relative;flex-shrink:0;'
-        : 'width:100%;max-width:960px;box-sizing:border-box;margin:8px auto;padding:9px 12px;background:#16161a;border:1px solid #383842;border-radius:8px;font-size:12px;color:#e4e4e7;font-family:system-ui,sans-serif;display:flex;flex-direction:column;gap:6px;z-index:20;position:sticky;top:var(--flx-sticky-top, 62px);flex-shrink:0;';
+        ? 'width:100%;box-sizing:border-box;margin:0 0 4px 0;padding:5px 8px;background:#16161a;border:1px solid #383842;border-radius:6px;font-size:11px;color:#e4e4e7;font-family:system-ui,sans-serif;display:flex;flex-direction:column;gap:4px;z-index:20;position:relative;flex-shrink:0;'
+        : 'width:100%;max-width:960px;box-sizing:border-box;margin:8px auto;padding:8px 12px;background:#16161a;border:1px solid #383842;border-radius:8px;font-size:12px;color:#e4e4e7;font-family:system-ui,sans-serif;display:flex;flex-direction:column;gap:6px;z-index:20;position:relative;flex-shrink:0;';
 
       if (ruleHits.length > 0) {
         strip.style.borderLeft = `3px solid ${ruleHits[0].color}`;
@@ -3137,7 +3144,7 @@
       if (dots) left.appendChild(dots);
 
       const tplSel = document.createElement('select');
-      tplSel.style.cssText = 'background:#222228;color:#d4d4d8;border:1px solid #3f3f46;border-radius:4px;padding:1px 5px;font-size:11px;cursor:pointer;max-width:140px;';
+      tplSel.style.cssText = 'background:#222228;color:#d4d4d8;border:1px solid #3f3f46;border-radius:4px;padding:1px 5px;font-size:11px;cursor:pointer;max-width:130px;';
       tplSel.title = 'Insert Outreach Template';
       const tplDefault = document.createElement('option');
       tplDefault.value = '';
@@ -3160,7 +3167,7 @@
         const tpl = settings.messageTemplates.find(t => t.id === chosenId);
         if (!tpl) return;
         const rendered = tpl.body.replace(/\{username\}/gi, displayHandle);
-        const inserted = insertTextIntoComposer(target.root, rendered);
+        const inserted = insertTextIntoComposer(target.scanRoot, rendered);
         if (inserted) {
           feedbackBadge.textContent = '✓ Inserted';
           feedbackBadge.style.display = 'inline';
@@ -3224,37 +3231,6 @@
       topRow.append(left, right);
       strip.appendChild(topRow);
 
-      if (ruleHits.length > 0 || limitConflicts.length > 0 || excludedHits.length > 0 || sharedGroups.length > 0) {
-        const badgeRow = document.createElement('div');
-        badgeRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;width:100%;';
-        for (const g of sharedGroups.slice(0, 3)) {
-          const p = document.createElement('span');
-          p.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:3px;background:rgba(52,211,153,0.14);color:#6ee7b7;border:1px solid rgba(52,211,153,0.4);';
-          p.textContent = `🤝 ${g}`;
-          badgeRow.appendChild(p);
-        }
-        for (const h of ruleHits) {
-          const p = document.createElement('span');
-          p.style.cssText = `font-size:10px;padding:1px 5px;border-radius:3px;background:${hexToRgba(h.color, 0.18)};color:${h.color};border:1px solid ${hexToRgba(h.color, 0.65)};`;
-          p.textContent = `${h.label}: ${h.keyword}`;
-          badgeRow.appendChild(p);
-        }
-        for (const c of limitConflicts) {
-          const p = document.createElement('span');
-          p.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:3px;background:rgba(245,158,11,0.18);color:#fcd34d;border:1px solid #d97706;';
-          p.textContent = `⚠ Limit: ${c.keyword}`;
-          badgeRow.appendChild(p);
-        }
-        for (const kw of excludedHits) {
-          const p = document.createElement('span');
-          p.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:3px;background:rgba(239,68,68,0.18);color:#fca5a5;border:1px solid #b91c1c;';
-          p.title = 'Red kink found in Fetishes (Into) list';
-          p.textContent = `-${kw}`;
-          badgeRow.appendChild(p);
-        }
-        strip.appendChild(badgeRow);
-      }
-
       if (record.note) {
         const noteLine = document.createElement('div');
         noteLine.style.cssText = 'padding:3px 7px;background:#1e1e24;border-left:2px solid #eab308;color:#fef08a;border-radius:3px;white-space:pre-wrap;width:100%;box-sizing:border-box;';
@@ -3262,18 +3238,15 @@
         strip.appendChild(noteLine);
       }
 
-      if (cachedBio && cachedBio.aboutText) {
-        const excerpt = document.createElement('div');
-        excerpt.style.cssText = 'color:#a1a1aa;font-size:11px;line-height:1.35;width:100%;';
-        excerpt.textContent = `About: ${cachedBio.aboutText.slice(0, 180)}${cachedBio.aboutText.length > 180 ? '…' : ''}`;
-        strip.appendChild(excerpt);
-      }
-
-      const headerEl = target.root.querySelector('header');
-      if (headerEl) {
-        headerEl.insertAdjacentElement('afterend', strip);
+      if (target.mode === 'dock') {
+        target.mountRoot.prepend(strip);
       } else {
-        target.root.prepend(strip);
+        const headerEl = target.mountRoot.querySelector('header');
+        if (headerEl) {
+          headerEl.insertAdjacentElement('afterend', strip);
+        } else {
+          target.mountRoot.prepend(strip);
+        }
       }
     }
   }
@@ -5019,7 +4992,6 @@
     const editing = isEditableTarget(e);
     const hasModifier = e.altKey || e.ctrlKey || e.metaKey;
 
-    // Completely pause all command checking while editing a field unless a modifier key (Alt/Ctrl/Meta) is held
     if (editing && !hasModifier) return;
 
     const settings = Store.getSettings();
