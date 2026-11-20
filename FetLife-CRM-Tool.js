@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FetLife Local Cache Filter & CRM
 // @namespace    local.fl.enhancer
-// @version      1.17.1
+// @version      1.17.3
 // @description  High-performance passive profile caching, infinite-scroll loop protection, neutral-by-default multi-select gender/location/relationship filters, built-in fetish/lifestyle lexicon, 2-word max term filter, duplicate entry detector, preset pack save/load/import/export, smart self-profile preference learner, Friends/Follows/CRM visibility protection, throttled batch tab opener, and searchable CRM modal
 // @match        https://fetlife.com/*
 // @match        https://*.fetlife.com/*
@@ -18,11 +18,11 @@
   // 1. NEUTRAL-FIRST DEFAULTS, LEXICON, PRESET PACKS, STAGES & KEYBINDS
   // =========================================================================
   const PIPELINE_STAGES = [
-    { id: 'shortlist', label: 'Shortlisted', short: '★ Shortlist', icon: '★', color: '#fbbf24', bg: 'rgba(251, 191, 36, 0.16)', border: '#b45309' },
-    { id: 'messaged',  label: 'Messaged',    short: '✉ Messaged',  icon: '✉', color: '#38bdf8', bg: 'rgba(56, 189, 248, 0.16)', border: '#0369a1' },
-    { id: 'talking',   label: 'Talking',     short: '💬 Talking',   icon: '💬', color: '#34d399', bg: 'rgba(52, 211, 153, 0.16)', border: '#047857' },
-    { id: 'met',       label: 'Met IRL',     short: '☕ Met IRL',   icon: '☕', color: '#c084fc', bg: 'rgba(192, 132, 252, 0.16)', border: '#7e22ce' },
-    { id: 'hidden',    label: 'Passed',      short: '✕ Pass',      icon: '✕', color: '#f87171', bg: 'rgba(248, 113, 113, 0.16)', border: '#b91c1c' }
+    { id: 'shortlist', label: 'Shortlisted', short: '★ Shortlist', icon: '★', color: '#c9a227', bg: 'rgba(201, 162, 39, 0.18)', border: '#8a7019' },
+    { id: 'messaged',  label: 'Messaged',    short: '✉ Messaged',  icon: '✉', color: '#a3a3a3', bg: 'rgba(163, 163, 163, 0.15)', border: '#737373' },
+    { id: 'talking',   label: 'Talking',     short: '💬 Talking',   icon: '💬', color: '#d4d4d4', bg: 'rgba(212, 212, 212, 0.12)', border: '#a3a3a3' },
+    { id: 'met',       label: 'Met IRL',     short: '☕ Met IRL',   icon: '☕', color: '#b91c1c', bg: 'rgba(185, 28, 28, 0.18)', border: '#7f1d1d' },
+    { id: 'hidden',    label: 'Passed',      short: '✕ Pass',      icon: '✕', color: '#737373', bg: 'rgba(115, 115, 115, 0.18)', border: '#525252' }
   ];
 
   const STAGE_MAP = Object.fromEntries(PIPELINE_STAGES.map(s => [s.id, s]));
@@ -66,7 +66,7 @@
         {
           id: 'pack_sensory',
           label: 'Sensory Play',
-          color: '#a855f7',
+          color: '#a3a3a3',
           keywords: ['sensation', 'edging', 'violet wand', 'estim', 'e-stim', 'leather', 'voyeur', 'switch']
         }
       ],
@@ -83,13 +83,13 @@
         {
           id: 'pack_rel',
           label: 'Relationship / Family',
-          color: '#f59e0b',
+          color: '#c9a227',
           keywords: ['polyamorous', 'polyfidelity', 'closed vee', 'co-parenting', 'nesting', 'solo poly']
         },
         {
           id: 'pack_sober_nd',
           label: 'Sober / Neurotype',
-          color: '#10b981',
+          color: '#a3a3a3',
           keywords: ['sober', 'straight edge', 'alcohol-free', 'nudist', 'nude yoga', 'neurodivergent', 'low-masking', 'direct']
         }
       ],
@@ -731,7 +731,7 @@
           cleanRules.push({
             id: r.id || `rule_${Date.now()}`,
             label: (r.label || 'Tag').trim(),
-            color: r.color || '#38bdf8',
+            color: r.color || '#a3a3a3',
             keywords: unique
           });
         }
@@ -758,7 +758,7 @@
           cleanRules.push({
             id: r.id || `imp_${Date.now()}_${cleanRules.length}`,
             label: (r.label || 'Tag').trim(),
-            color: r.color || '#a855f7',
+            color: r.color || '#a3a3a3',
             keywords: unique
           });
         }
@@ -810,7 +810,7 @@
         if (unique.length > 0) {
           const existingIdx = nextRules.findIndex(r => normalizeTermKey(r.label) === normalizeTermKey(pRule.label));
           if (existingIdx >= 0) nextRules[existingIdx].keywords = [...nextRules[existingIdx].keywords, ...unique];
-          else nextRules.push({ id: pRule.id || `pack_${Date.now()}_${rulesAdded}`, label: pRule.label, color: pRule.color || '#a855f7', keywords: unique });
+          else nextRules.push({ id: pRule.id || `pack_${Date.now()}_${rulesAdded}`, label: pRule.label, color: pRule.color || '#a3a3a3', keywords: unique });
           rulesAdded += unique.length;
         }
       }
@@ -1053,7 +1053,7 @@
       let intoAdded = 0;
       if (cleanKinks.length > 0) {
         const idx = rules.findIndex(r => r.id === 'self_kinks');
-        const selfRule = { id: 'self_kinks', label: 'Shared Kink', color: '#ec4899', keywords: cleanKinks };
+        const selfRule = { id: 'self_kinks', label: 'Shared Kink', color: '#b91c1c', keywords: cleanKinks };
         if (idx >= 0) rules[idx] = selfRule;
         else rules.push(selfRule);
         intoAdded = cleanKinks.length;
@@ -1422,12 +1422,12 @@
   // 5. SELF-IDENTITY DETECTOR, SCOPED DEMOGRAPHIC PARSER & DOM HELPERS
   // =========================================================================
   function hexToRgba(hex, alpha) {
-    const clean = (hex || '#38bdf8').replace('#', '').trim();
+    const clean = (hex || '#a3a3a3').replace('#', '').trim();
     const full = clean.length === 3
       ? clean.split('').map(c => c + c).join('')
       : clean.padEnd(6, '0').slice(0, 6);
     const num = parseInt(full, 16);
-    if (Number.isNaN(num)) return `rgba(56, 189, 248, ${alpha})`;
+    if (Number.isNaN(num)) return `rgba(163, 163, 163, ${alpha})`;
     const r = (num >> 16) & 255;
     const g = (num >> 8) & 255;
     const b = num & 255;
@@ -2350,7 +2350,7 @@
         hits.push({
           id: rule.id || rule.label,
           label: rule.label || 'Match',
-          color: rule.color || '#38bdf8',
+          color: rule.color || '#a3a3a3',
           keyword: matchedKw,
           fromCache
         });
@@ -2459,14 +2459,14 @@
     const pill = document.createElement('span');
     if (isManualGender) {
       if (genderCategory === 'male') {
-        pill.style.cssText = 'font-size:11px;color:#93c5fd;background:rgba(59,130,246,0.16);border:1px solid rgba(59,130,246,0.38);padding:1px 6px;border-radius:4px;font-weight:500;';
+        pill.style.cssText = 'font-size:11px;color:#d4d4d4;background:rgba(163,163,163,0.15);border:1px solid rgba(163,163,163,0.30);padding:1px 6px;border-radius:4px;font-weight:500;';
       } else if (genderCategory === 'other') {
-        pill.style.cssText = 'font-size:11px;color:#d8b4fe;background:rgba(168,85,247,0.16);border:1px solid rgba(168,85,247,0.38);padding:1px 6px;border-radius:4px;font-weight:500;';
+        pill.style.cssText = 'font-size:11px;color:#a3a3a3;background:rgba(163,163,163,0.15);border:1px solid rgba(163,163,163,0.30);padding:1px 6px;border-radius:4px;font-weight:500;';
       } else {
-        pill.style.cssText = 'font-size:11px;color:#f9a8d4;background:rgba(244,114,182,0.14);border:1px solid rgba(244,114,182,0.35);padding:1px 6px;border-radius:4px;font-weight:500;';
+        pill.style.cssText = 'font-size:11px;color:#fca5a5;background:rgba(185,28,28,0.14);border:1px solid rgba(185,28,28,0.30);padding:1px 6px;border-radius:4px;font-weight:500;';
       }
     } else {
-      pill.style.cssText = 'font-size:11px;color:#cbd5e1;background:rgba(148,163,184,0.12);border:1px solid rgba(148,163,184,0.25);padding:1px 6px;border-radius:4px;font-weight:500;';
+      pill.style.cssText = 'font-size:11px;color:#a3a3a3;background:rgba(163,163,163,0.12);border:1px solid rgba(163,163,163,0.25);padding:1px 6px;border-radius:4px;font-weight:500;';
     }
     pill.textContent = summary;
     return pill;
@@ -2477,11 +2477,11 @@
     const mg = record.manualGender || '';
 
     if (mg === 'female') {
-      sel.style.cssText = 'background:rgba(244,114,182,0.18);color:#f9a8d4;border:1px solid #db2777;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;font-weight:600;';
+      sel.style.cssText = 'background:rgba(185,28,28,0.16);color:#fca5a5;border:1px solid #7f1d1d;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;font-weight:600;';
     } else if (mg === 'male') {
-      sel.style.cssText = 'background:rgba(59,130,246,0.18);color:#93c5fd;border:1px solid #2563eb;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;font-weight:600;';
+      sel.style.cssText = 'background:rgba(163,163,163,0.15);color:#d4d4d4;border:1px solid #737373;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;font-weight:600;';
     } else if (mg === 'other') {
-      sel.style.cssText = 'background:rgba(168,85,247,0.18);color:#d8b4fe;border:1px solid #7e22ce;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;font-weight:600;';
+      sel.style.cssText = 'background:rgba(163,163,163,0.15);color:#a3a3a3;border:1px solid #7f1d1d;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;font-weight:600;';
     } else {
       sel.style.cssText = 'background:#202024;color:#a1a1aa;border:1px solid #3f3f46;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;';
     }
@@ -2493,9 +2493,9 @@
 
     const opts = [
       { val: '',       text: compact ? `G:${autoHint}` : `Gender: Auto (${autoHint})`, color: '#e4e4e7' },
-      { val: 'female', text: compact ? '♀ F' : '♀ Female',                             color: '#f9a8d4' },
-      { val: 'male',   text: compact ? '♂ M' : '♂ Male',                               color: '#93c5fd' },
-      { val: 'other',  text: compact ? '⚧ Oth' : '⚧ Other',                            color: '#d8b4fe' }
+      { val: 'female', text: compact ? '♀ F' : '♀ Female',                             color: '#fca5a5' },
+      { val: 'male',   text: compact ? '♂ M' : '♂ Male',                               color: '#d4d4d4' },
+      { val: 'other',  text: compact ? '⚧ Oth' : '⚧ Other',                            color: '#a3a3a3' }
     ];
 
     for (const o of opts) {
@@ -2631,7 +2631,7 @@
       const viewToggleBtn = document.createElement('button');
       viewToggleBtn.type = 'button';
       viewToggleBtn.style.cssText = isMinimal
-        ? `${baseBtnStyle}background:rgba(56,189,248,0.14);border-color:#0284c7;color:#7dd3fc;font-weight:700;`
+        ? `${baseBtnStyle}background:rgba(163,163,163,0.14);border-color:#737373;color:#d4d4d4;font-weight:700;`
         : `${baseBtnStyle}color:#9ca3af;`;
       viewToggleBtn.textContent = isMinimal ? '▸' : '▾';
       viewToggleBtn.title = isMinimal ? 'Expand overlay to Full view (M)' : 'Condense overlay to Minimal strip (M)';
@@ -2642,7 +2642,7 @@
     const isStarred = record.status === 'shortlist';
     const starBtn = document.createElement('button');
     starBtn.type = 'button';
-    starBtn.style.cssText = isStarred ? `${baseBtnStyle}background:rgba(251,191,36,0.18);border-color:#d97706;color:#fde047;font-weight:600;` : baseBtnStyle;
+    starBtn.style.cssText = isStarred ? `${baseBtnStyle}background:rgba(251,191,36,0.18);border-color:#8a7019;color:#c9a227;font-weight:600;` : baseBtnStyle;
     starBtn.textContent = compactControls ? (isStarred ? '★' : '☆') : (isStarred ? '★ Shortlisted' : '☆ Shortlist');
     starBtn.title = 'Toggle Shortlist';
     starBtn.addEventListener('click', (e) => { stopNav(e); persistMeta({ status: isStarred ? null : 'shortlist' }); });
@@ -2686,7 +2686,7 @@
     ageBtn.type = 'button';
     const ageOut = isAgeOutOfRange(curAge, settings);
     ageBtn.style.cssText = ageOut
-      ? `${baseBtnStyle}background:rgba(239,68,68,0.16);border-color:#b91c1c;color:#fca5a5;font-weight:600;`
+      ? `${baseBtnStyle}background:rgba(185,28,28,0.16);border-color:#b91c1c;color:#fca5a5;font-weight:600;`
       : (curAge !== null ? `${baseBtnStyle}color:#cbd5e1;` : `${baseBtnStyle}color:#71717a;`);
     ageBtn.textContent = curAge !== null ? `${curAge}y` : 'Age?';
     ageBtn.title = 'Click to set or override age (18-99), or leave blank to reset to auto';
@@ -2704,7 +2704,7 @@
     const isPassed = record.status === 'hidden';
     const passBtn = document.createElement('button');
     passBtn.type = 'button';
-    passBtn.style.cssText = isPassed ? `${baseBtnStyle}background:rgba(248,113,113,0.18);border-color:#dc2626;color:#fca5a5;font-weight:600;` : baseBtnStyle;
+    passBtn.style.cssText = isPassed ? `${baseBtnStyle}background:rgba(185,28,28,0.18);border-color:#7f1d1d;color:#fca5a5;font-weight:600;` : baseBtnStyle;
     passBtn.textContent = compactControls ? '✕' : (isPassed ? '✕ Passed' : '✕ Pass');
     passBtn.title = 'Pass / Hide Profile';
     passBtn.addEventListener('click', (e) => { stopNav(e); persistMeta({ status: isPassed ? null : 'hidden' }); });
@@ -2712,7 +2712,7 @@
     const noteBtn = document.createElement('button');
     noteBtn.type = 'button';
     noteBtn.style.cssText = record.note
-      ? `${baseBtnStyle}background:rgba(212,175,55,0.15);border-color:#b45309;color:#fcd34d;`
+      ? `${baseBtnStyle}background:rgba(212,175,55,0.15);border-color:#b45309;color:#c9a227;`
       : baseBtnStyle;
     noteBtn.textContent = compactControls ? '✎' : (record.note ? '✎ Edit Note' : '✎ Note');
     noteBtn.title = record.note ? `Private Note: ${record.note}` : 'Edit Private Note';
@@ -2732,19 +2732,19 @@
     if (!isInlineRow && (isProfileBar || viewMode === 'full')) {
       if (record.isFriend) {
         const fBadge = document.createElement('span');
-        fBadge.style.cssText = 'font-size:10px;color:#6ee7b7;padding:1px 5px;background:rgba(16,185,129,0.14);border:1px solid rgba(16,185,129,0.35);border-radius:4px;font-weight:600;';
+        fBadge.style.cssText = 'font-size:10px;color:#a3a3a3;padding:1px 5px;background:rgba(163,163,163,0.14);border:1px solid rgba(163,163,163,0.28);border-radius:4px;font-weight:600;';
         fBadge.textContent = '★ Friend';
         bar.appendChild(fBadge);
       } else if (record.isFollowing) {
         const folBadge = document.createElement('span');
-        folBadge.style.cssText = 'font-size:10px;color:#7dd3fc;padding:1px 5px;background:rgba(56,189,248,0.12);border:1px solid rgba(56,189,248,0.3);border-radius:4px;';
+        folBadge.style.cssText = 'font-size:10px;color:#d4d4d4;padding:1px 5px;background:rgba(163,163,163,0.12);border:1px solid rgba(163,163,163,0.28);border-radius:4px;';
         folBadge.textContent = '✓ Following';
         bar.appendChild(folBadge);
       }
 
       if (record.lastContacted && record.status !== 'hidden') {
         const contacted = document.createElement('span');
-        contacted.style.cssText = 'font-size:10px;color:#7dd3fc;padding:1px 5px;background:rgba(56,189,248,0.1);border:1px solid rgba(56,189,248,0.28);border-radius:4px;';
+        contacted.style.cssText = 'font-size:10px;color:#d4d4d4;padding:1px 5px;background:rgba(163,163,163,0.10);border:1px solid rgba(163,163,163,0.26);border-radius:4px;';
         contacted.textContent = `Contacted ${record.lastContacted}`;
         bar.appendChild(contacted);
       } else if (record.lastSeen && record.status !== 'hidden') {
@@ -2776,7 +2776,7 @@
 
     if (demos?.relationships) {
       const relPill = document.createElement('span');
-      relPill.style.cssText = 'font-size:10px;color:#d8b4fe;background:rgba(168,85,247,0.12);border:1px solid rgba(168,85,247,0.28);padding:1px 5px;border-radius:4px;';
+      relPill.style.cssText = 'font-size:10px;color:#a3a3a3;background:rgba(163,163,163,0.12);border:1px solid rgba(163,163,163,0.28);padding:1px 5px;border-radius:4px;';
       relPill.textContent = demos.relationships;
       toolbar.appendChild(relPill);
     }
@@ -2792,35 +2792,35 @@
 
     if (genderRejected) {
       const b = document.createElement('span');
-      b.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
+      b.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(185,28,28,0.16);color:#fca5a5;border:1px solid #b91c1c;';
       b.textContent = `-Gender${demos?.gender ? ` (${demos.gender})` : ' (Unknown)'}`;
       toolbar.appendChild(b);
     }
 
     if (nonLocalRejected) {
       const b = document.createElement('span');
-      b.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
+      b.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(185,28,28,0.16);color:#fca5a5;border:1px solid #b91c1c;';
       b.textContent = `-Non-Local${demos?.location ? ` (${demos.location})` : ''}`;
       toolbar.appendChild(b);
     }
 
     if (relRejected) {
       const b = document.createElement('span');
-      b.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
+      b.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(185,28,28,0.16);color:#fca5a5;border:1px solid #b91c1c;';
       b.textContent = `-Rel${demos?.relationships ? ` (${demos.relationships})` : ''}`;
       toolbar.appendChild(b);
     }
 
     if (missingAbout) {
       const b = document.createElement('span');
-      b.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
+      b.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(185,28,28,0.16);color:#fca5a5;border:1px solid #b91c1c;';
       b.textContent = '-No About';
       toolbar.appendChild(b);
     }
 
     if (ageRejected) {
       const b = document.createElement('span');
-      b.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
+      b.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(185,28,28,0.16);color:#fca5a5;border:1px solid #b91c1c;';
       b.textContent = `-Age (${demos.age})`;
       toolbar.appendChild(b);
     }
@@ -2834,14 +2834,14 @@
 
     limitConflicts.forEach((conf) => {
       const badge = document.createElement('span');
-      badge.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(245,158,11,0.18);color:#fcd34d;border:1px solid #d97706;font-weight:500;';
+      badge.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(201,162,39,0.18);color:#c9a227;border:1px solid #8a7019;font-weight:500;';
       badge.textContent = `⚠ Limit: ${conf.keyword}`;
       toolbar.appendChild(badge);
     });
 
     excludedHits.forEach((kw) => {
       const badge = document.createElement('span');
-      badge.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
+      badge.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(185,28,28,0.16);color:#fca5a5;border:1px solid #b91c1c;';
       badge.textContent = `-${kw}`;
       toolbar.appendChild(badge);
     });
@@ -3448,10 +3448,10 @@
       selfBar.className = 'flx-profile-bar';
       selfBar.dataset.flxProfile = currentKey;
       selfBar.dataset.flxSig = selfSig;
-      selfBar.style.cssText = 'width:100%;max-width:1280px;margin:8px auto 0;padding:9px 14px;background:rgba(16,24,32,0.96);backdrop-filter:blur(10px);border:1px solid #0284c7;border-radius:8px;display:flex;flex-wrap:wrap;align-items:center;gap:10px;position:relative;z-index:90;box-sizing:border-box;font-family:system-ui,sans-serif;font-size:12px;color:#e4e4e7;';
+      selfBar.style.cssText = 'width:100%;max-width:1280px;margin:8px auto 0;padding:9px 14px;background:rgba(16,24,32,0.96);backdrop-filter:blur(10px);border:1px solid #737373;border-radius:8px;display:flex;flex-wrap:wrap;align-items:center;gap:10px;position:relative;z-index:90;box-sizing:border-box;font-family:system-ui,sans-serif;font-size:12px;color:#e4e4e7;';
 
       const badge = document.createElement('strong');
-      badge.style.color = '#7dd3fc';
+      badge.style.color = '#d4d4d4';
       badge.textContent = `👤 Your Profile (/${displayHandle})`;
 
       const stats = document.createElement('span');
@@ -3460,7 +3460,7 @@
 
       const learnAllBtn = document.createElement('button');
       learnAllBtn.type = 'button';
-      learnAllBtn.style.cssText = 'background:rgba(56,189,248,0.18);color:#7dd3fc;border:1px solid #0284c7;border-radius:5px;padding:3px 9px;cursor:pointer;font-size:11px;font-weight:600;margin-left:auto;';
+      learnAllBtn.style.cssText = 'background:rgba(163,163,163,0.16);color:#d4d4d4;border:1px solid #737373;border-radius:5px;padding:3px 9px;cursor:pointer;font-size:11px;font-weight:600;margin-left:auto;';
       learnAllBtn.textContent = '✨ Auto-Configure Filters From My Profile';
       learnAllBtn.title = 'Infer gender preferences from Orientation, set Local Region from your Location, and sync Into kinks & atomic Limits';
       learnAllBtn.addEventListener('click', () => {
@@ -3642,7 +3642,7 @@
       const pinBtn = document.createElement('button');
       pinBtn.type = 'button';
       pinBtn.style.cssText = isSticky
-        ? 'background:rgba(56,189,248,0.16);color:#7dd3fc;border:1px solid #0284c7;border-radius:5px;padding:2px 7px;cursor:pointer;font-size:11px;font-weight:600;margin-left:auto;'
+        ? 'background:rgba(163,163,163,0.15);color:#d4d4d4;border:1px solid #737373;border-radius:5px;padding:2px 7px;cursor:pointer;font-size:11px;font-weight:600;margin-left:auto;'
         : 'background:#202024;color:#a1a1aa;border:1px solid #3f3f46;border-radius:5px;padding:2px 7px;cursor:pointer;font-size:11px;margin-left:auto;';
       pinBtn.textContent = isSticky ? '📌 Pinned' : '📌 Pin Bar';
       pinBtn.title = 'Keep this profile bar pinned at the top while scrolling';
@@ -3784,7 +3784,7 @@
       left.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
 
       const title = document.createElement('strong');
-      title.style.color = '#93c5fd';
+      title.style.color = '#d4d4d4';
       title.textContent = `CRM: /${displayHandle}`;
       left.appendChild(title);
 
@@ -3813,7 +3813,7 @@
       }
 
       const feedbackBadge = document.createElement('span');
-      feedbackBadge.style.cssText = 'font-size:10px;color:#6ee7b7;display:none;';
+      feedbackBadge.style.cssText = 'font-size:10px;color:#a3a3a3;display:none;';
 
       tplSel.addEventListener('change', (e) => {
         const chosenId = e.target.value;
@@ -4163,28 +4163,28 @@
               padding: 5px 9px; cursor: pointer; font-size: 12px; font-family: inherit;
             }
             button:hover { background: #2d2d35; color: #fff; }
-            button.active-tab { background: rgba(234, 179, 8, 0.16); border-color: #ca8a04; color: #fde047; font-weight: 600; }
+            button.active-tab { background: rgba(201,162,39,0.16); border-color: #8a7019; color: #c9a227; font-weight: 600; }
             button.toggle-pill { font-size: 11px; padding: 4px 8px; }
-            button.toggle-pill.on { background: rgba(56, 189, 248, 0.16); border-color: #0284c7; color: #7dd3fc; font-weight: 600; }
+            button.toggle-pill.on { background: rgba(163,163,163,0.15); border-color: #737373; color: #d4d4d4; font-weight: 600; }
             button.danger-ghost { color: #fca5a5; border-color: #4c1d1d; }
             .list { flex: 1; overflow-y: auto; padding: 14px 18px; display: flex; flex-direction: column; gap: 12px; }
             .empty { text-align: center; color: #71717a; padding: 54px 16px; font-size: 13px; }
             .card { background: #1a1a20; border: 1px solid #2d2d36; border-radius: 10px; padding: 13px 15px; display: flex; flex-direction: column; gap: 9px; }
             .card-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
-            .user-link { color: #93c5fd; font-weight: 700; font-size: 15px; text-decoration: none; }
+            .user-link { color: #d4d4d4; font-weight: 700; font-size: 15px; text-decoration: none; }
             .user-link:hover { text-decoration: underline; }
             .badges { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
             .pill { font-size: 11px; padding: 2px 7px; border-radius: 5px; background: #24242b; color: #a1a1aa; border: 1px solid #363640; }
-            .pill-ex { background: rgba(239,68,68,0.16); color: #fca5a5; border-color: #b91c1c; }
-            .pill-warn { background: rgba(245,158,11,0.18); color: #fcd34d; border-color: #d97706; }
-            .pill-group { background: rgba(52,211,153,0.12); color: #6ee7b7; border-color: rgba(52,211,153,0.35); }
+            .pill-ex { background: rgba(185,28,28,0.16); color: #fca5a5; border-color: #b91c1c; }
+            .pill-warn { background: rgba(201,162,39,0.18); color: #c9a227; border-color: #8a7019; }
+            .pill-group { background: rgba(163,163,163,0.12); color: #a3a3a3; border-color: rgba(163,163,163,0.28); }
             .stage-bar { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
             .stage-btn { padding: 3px 8px; font-size: 11px; border-radius: 5px; }
             .gender-seg { display: inline-flex; border: 1px solid #3a3a44; border-radius: 5px; overflow: hidden; }
             .gender-seg button { border: none; border-radius: 0; padding: 3px 7px; font-size: 11px; background: #1d1d24; }
-            .gender-seg button.g-female { background: rgba(244,114,182,0.22); color: #f9a8d4; font-weight: 600; }
-            .gender-seg button.g-male { background: rgba(59,130,246,0.22); color: #93c5fd; font-weight: 600; }
-            .gender-seg button.g-other { background: rgba(168,85,247,0.22); color: #d8b4fe; font-weight: 600; }
+            .gender-seg button.g-female { background: rgba(185,28,28,0.18); color: #fca5a5; font-weight: 600; }
+            .gender-seg button.g-male { background: rgba(163,163,163,0.18); color: #d4d4d4; font-weight: 600; }
+            .gender-seg button.g-other { background: rgba(163,163,163,0.18); color: #a3a3a3; font-weight: 600; }
             .gender-seg button.g-auto { background: #2c2c36; color: #e4e4e7; font-weight: 600; }
             .note-row { display: flex; gap: 8px; align-items: flex-start; width: 100%; }
             .note-area { flex: 1; min-height: 44px; resize: vertical; line-height: 1.45; background: #131317; border-color: #32323c; }
@@ -4195,8 +4195,8 @@
             .sub-tab.active { background: #2c2c36; color: #f4f4f5; border-color: #525260; }
             .bio-body { font-size: 12px; color: #d4d4d8; line-height: 1.5; white-space: pre-wrap; max-height: 220px; overflow-y: auto; }
             .fetish-group { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
-            .ftag-into { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(16,185,129,0.14); color: #6ee7b7; border: 1px solid rgba(16,185,129,0.35); }
-            .ftag-limit { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(239,68,68,0.14); color: #fca5a5; border: 1px solid rgba(239,68,68,0.35); }
+            .ftag-into { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(163,163,163,0.14); color: #a3a3a3; border: 1px solid rgba(163,163,163,0.28); }
+            .ftag-limit { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(185,28,28,0.14); color: #fca5a5; border: 1px solid rgba(185,28,28,0.35); }
           </style>
           <div class="backdrop" id="crm-backdrop">
             <div class="modal" role="dialog" aria-modal="true" aria-label="Local FetLife CRM">
@@ -4496,8 +4496,8 @@
         } else if (entry.isFollowing) {
           const b = document.createElement('span');
           b.className = 'pill';
-          b.style.color = '#7dd3fc';
-          b.style.borderColor = '#0369a1';
+          b.style.color = '#d4d4d4';
+          b.style.borderColor = '#737373';
           b.textContent = '✓ Following';
           badges.appendChild(b);
         }
@@ -4505,8 +4505,8 @@
         if (entry.relationships) {
           const b = document.createElement('span');
           b.className = 'pill';
-          b.style.color = '#d8b4fe';
-          b.style.borderColor = 'rgba(168,85,247,0.35)';
+          b.style.color = '#a3a3a3';
+          b.style.borderColor = 'rgba(163,163,163,0.35)';
           b.textContent = entry.relationships;
           badges.appendChild(b);
         }
@@ -4514,8 +4514,8 @@
         if (entry.lastContacted) {
           const b = document.createElement('span');
           b.className = 'pill';
-          b.style.color = entry.followUpDue ? '#fde047' : '#7dd3fc';
-          b.style.borderColor = entry.followUpDue ? '#ca8a04' : '#0369a1';
+          b.style.color = entry.followUpDue ? '#c9a227' : '#d4d4d4';
+          b.style.borderColor = entry.followUpDue ? '#8a7019' : '#737373';
           b.textContent = entry.followUpDue
             ? `⏰ Contacted ${entry.lastContacted} (${entry.daysSinceContact}d ago)`
             : `Contacted ${entry.lastContacted}`;
@@ -4686,7 +4686,7 @@
             } else if (activeSub === 'fetishes') {
               if (entry.fetishesInto.length > 0) {
                 const lbl = document.createElement('div');
-                lbl.style.cssText = 'font-size:11px;color:#6ee7b7;font-weight:600;margin-bottom:3px;';
+                lbl.style.cssText = 'font-size:11px;color:#a3a3a3;font-weight:600;margin-bottom:3px;';
                 lbl.textContent = `Into / Curious (${entry.fetishesInto.length}):`;
                 const wrap = document.createElement('div');
                 wrap.className = 'fetish-group';
@@ -4849,10 +4849,10 @@
             padding: 4px 8px; cursor: pointer; font-size: 11px;
           }
           button:hover { background: #303038; color: #fff; }
-          button.star { background: rgba(234, 179, 8, 0.18); border-color: #ca8a04; color: #fde047; font-weight: 600; }
-          button.sky { background: rgba(56, 189, 248, 0.16); border-color: #0284c7; color: #7dd3fc; font-weight: 600; }
-          button.danger { background: rgba(239, 68, 68, 0.18); border-color: #dc2626; color: #fca5a5; }
-          button.capturing { background: rgba(56, 189, 248, 0.22); border-color: #0284c7; color: #7dd3fc; font-weight: 600; }
+          button.star { background: rgba(201,162,39,0.18); border-color: #8a7019; color: #c9a227; font-weight: 600; }
+          button.sky { background: rgba(163,163,163,0.15); border-color: #737373; color: #d4d4d4; font-weight: 600; }
+          button.danger { background: rgba(185,28,28,0.18); border-color: #7f1d1d; color: #fca5a5; }
+          button.capturing { background: rgba(163,163,163,0.18); border-color: #737373; color: #d4d4d4; font-weight: 600; }
           .scan-pill {
             font-size: 11px; color: #a1a1aa; padding: 2px 7px; background: #1c1c22;
             border: 1px solid #303038; border-radius: 5px; max-width: 195px;
@@ -4884,7 +4884,7 @@
           .tpl-card { background: #131317; border: 1px solid #2a2a33; border-radius: 5px; padding: 5px 6px; display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
           .kb-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: #cbd5e1; padding: 2px 0; }
           .kb-btn { min-width: 96px; text-align: center; font-family: ui-monospace, monospace; }
-          .status { color: #6ee7b7; font-size: 11px; min-height: 14px; }
+          .status { color: #a3a3a3; font-size: 11px; min-height: 14px; }
         </style>
         <div class="box collapsed" id="hud-box">
           <div class="row">
@@ -5114,14 +5114,14 @@
           `/${handleLabel} • ${selfProf.orientation || 'Orientation?'} • ${selfProf.location || 'Location?'} • ${intoCount} Into • ${limCount} Limits`;
       };
 
-      const addRuleRow = (rule = { label: 'New Tag', color: '#f472b6', keywords: [] }) => {
+      const addRuleRow = (rule = { label: 'New Tag', color: '#a3a3a3', keywords: [] }) => {
         const row = document.createElement('div');
         row.className = 'rule-row';
         row.dataset.ruleId = rule.id || `custom_${Date.now()}`;
 
         const colorInput = document.createElement('input');
         colorInput.type = 'color';
-        colorInput.value = rule.color || '#38bdf8';
+        colorInput.value = rule.color || '#a3a3a3';
 
         const labelInput = document.createElement('input');
         labelInput.type = 'text';
