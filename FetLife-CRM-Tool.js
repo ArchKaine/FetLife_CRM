@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         FetLife Local Cache Filter & CRM
 // @namespace    local.fl.enhancer
-// @version      1.12.4
-// @description  Zero-fetch passive profile & fetish caching, main-profile/About Limits extraction, self-profile kink/limit auto-sync, scoped sub-profile card differentiation, accurate age/gender filtering, and searchable CRM modal
+// @version      1.17.2
+// @description  High-performance passive profile caching, infinite-scroll loop protection, neutral-by-default multi-select gender/location/relationship filters, built-in fetish/lifestyle lexicon, 2-word max term filter, duplicate entry detector, preset pack save/load/import/export, smart self-profile preference learner, Friends/Follows/CRM visibility protection, throttled batch tab opener, and searchable CRM modal
 // @match        https://fetlife.com/*
 // @match        https://*.fetlife.com/*
 // @grant        GM_getValue
@@ -15,14 +15,49 @@
   'use strict';
 
   // =========================================================================
-  // 1. PROFILE-TUNED DEFAULTS, PIPELINE STAGES, TEMPLATES & KEYBINDS
+  // 0. UTILITIES & EARTH-TONE PALETTE
+  // =========================================================================
+  function escapeHtml(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  const PALETTE = {
+    stage: {
+      shortlist: { color: '#d4a843', bg: 'rgba(212, 168, 67, 0.12)', border: '#9a7b2e' },
+      messaged:  { color: '#7aa3b8', bg: 'rgba(122, 163, 184, 0.12)', border: '#4a6b7d' },
+      talking:   { color: '#8ab896', bg: 'rgba(138, 184, 150, 0.12)', border: '#5a7d62' },
+      met:       { color: '#b89cc8', bg: 'rgba(184, 156, 200, 0.12)', border: '#7d6a8a' },
+      hidden:    { color: '#c97a6b', bg: 'rgba(201, 122, 107, 0.12)', border: '#8b4f44' }
+    },
+    ui: {
+      accent: '#7aa3b8',
+      warm: '#d4a843',
+      cool: '#8ab896',
+      muted: '#a89d8f',
+      friend: '#8ab896',
+      follow: '#7aa3b8',
+      note: '#d4a843',
+      warn: '#c97a6b',
+      danger: '#c97a6b',
+      text: { primary: '#e8e4dc', secondary: '#b8b0a0', muted: '#888070' },
+      surface: { bg: '#1a1a18', border: '#3a3a34', hover: '#2a2a26', input: '#232321' }
+    }
+  };
+
+  // =========================================================================
+  // 1. NEUTRAL-FIRST DEFAULTS, LEXICON, PRESET PACKS, STAGES & KEYBINDS
   // =========================================================================
   const PIPELINE_STAGES = [
-    { id: 'shortlist', label: 'Shortlisted', short: '★ Shortlist', icon: '★', color: '#fbbf24', bg: 'rgba(251, 191, 36, 0.16)', border: '#b45309' },
-    { id: 'messaged',  label: 'Messaged',    short: '✉ Messaged',  icon: '✉', color: '#38bdf8', bg: 'rgba(56, 189, 248, 0.16)', border: '#0369a1' },
-    { id: 'talking',   label: 'Talking',     short: '💬 Talking',   icon: '💬', color: '#34d399', bg: 'rgba(52, 211, 153, 0.16)', border: '#047857' },
-    { id: 'met',       label: 'Met IRL',     short: '☕ Met IRL',   icon: '☕', color: '#c084fc', bg: 'rgba(192, 132, 252, 0.16)', border: '#7e22ce' },
-    { id: 'hidden',    label: 'Passed',      short: '✕ Pass',      icon: '✕', color: '#f87171', bg: 'rgba(248, 113, 113, 0.16)', border: '#b91c1c' }
+    { id: 'shortlist', label: 'Shortlisted', short: '★ Shortlist', icon: '★', ...PALETTE.stage.shortlist },
+    { id: 'messaged',  label: 'Messaged',    short: '✉ Messaged',  icon: '✉', ...PALETTE.stage.messaged },
+    { id: 'talking',   label: 'Talking',     short: '💬 Talking',   icon: '💬', ...PALETTE.stage.talking },
+    { id: 'met',       label: 'Met IRL',     short: '☕ Met IRL',   icon: '☕', ...PALETTE.stage.met },
+    { id: 'hidden',    label: 'Passed',      short: '✕ Pass',      icon: '✕', ...PALETTE.stage.hidden }
   ];
 
   const STAGE_MAP = Object.fromEntries(PIPELINE_STAGES.map(s => [s.id, s]));
@@ -35,88 +70,84 @@
     off: 'View: Off'
   };
 
-  const DEFAULT_HIGHLIGHT_RULES = [
-    {
-      id: 'values',
-      label: 'Family / Vee',
-      color: '#f59e0b',
-      keywords: [
-        'closed vee', 'polyfidelity', 'three-parent', 'co-parent', 'co-parenting',
-        'motherhood', 'want kids', 'biological dad', 'platonic meta', 'long-term', 'loyal'
+  // Built-in lexicon of recognized fetish, sensory, dynamic, and lifestyle terms (all <= 2 words)
+  const KNOWN_FETISH_LEXICON = {
+    sensory: [
+      'sensation', 'edging', 'violet wand', 'estim', 'e-stim', 'leather',
+      'voyeur', 'switch', 'squirting', 'massage', 'tickling', 'sensory play',
+      'wax play', 'roleplay', 'costumes', 'lingerie'
+    ],
+    impactAndRestraint: [
+      'restraint', 'ropes', 'shibari', 'bondage', 'cuffs', 'blindfold',
+      'impact play', 'spanking', 'flogger', 'paddle', 'crop', 'caning',
+      'masochism', 'sadism', 'watersports', 'scat', 'ddlg', 'tpe',
+      'protocols', 'findom', 'paypig', 'tribute', 'hotwife', 'cuckold', 'stag'
+    ],
+    relationshipsAndLifestyle: [
+      'polyamory', 'polyamorous', 'polyfidelity', 'closed vee', 'co-parenting',
+      'nesting', 'solo poly', 'monogamy', 'sober', 'straight edge',
+      'alcohol-free', 'drug-free', 'nudist', 'clothing-optional', 'nude yoga',
+      'neurodivergent', 'autism', 'low-masking', 'intj', 'direct', 'tinkerer'
+    ]
+  };
+
+  // Optional preset packs (never active unless explicitly loaded or imported by the user)
+  const PRESET_PACKS = {
+    sensory_play: {
+      id: 'sensory_play',
+      name: 'Sensory & Sensation Pack',
+      description: 'Highlights tactile/sensory terms and flags high-intensity restraint/impact/fluid terms.',
+      highlightRules: [
+        {
+          id: 'pack_sensory',
+          label: 'Sensory Play',
+          color: PALETTE.ui.cool,
+          keywords: ['sensation', 'edging', 'violet wand', 'estim', 'e-stim', 'leather', 'voyeur', 'switch']
+        }
+      ],
+      excludeKeywords: [
+        'restraint', 'ropes', 'shibari', 'blindfold', 'impact play',
+        'flogger', 'paddle', 'masochism', 'watersports', 'scat', 'findom', 'paypig'
       ]
     },
-    {
-      id: 'kink',
-      label: 'Sensation / Play',
-      color: '#a855f7',
-      keywords: [
-        'non-d/s', 'sensation', 'edging', 'violet wand', 'estim', 'e-stim',
-        'garment leather', 'leather', 'fluid-positive', 'squirting', 'voyeur', 'switch'
-      ]
+    poly_lifestyle: {
+      id: 'poly_lifestyle',
+      name: 'Poly, Sober & Neurodivergent Pack',
+      description: 'Highlights relationship structure, sobriety, and direct communication terms.',
+      highlightRules: [
+        {
+          id: 'pack_rel',
+          label: 'Relationship / Family',
+          color: PALETTE.ui.warm,
+          keywords: ['polyamorous', 'polyfidelity', 'closed vee', 'co-parenting', 'nesting', 'solo poly']
+        },
+        {
+          id: 'pack_sober_nd',
+          label: 'Sober / Neurotype',
+          color: PALETTE.ui.cool,
+          keywords: ['sober', 'straight edge', 'alcohol-free', 'nudist', 'nude yoga', 'neurodivergent', 'low-masking', 'direct']
+        }
+      ],
+      excludeKeywords: ['hotwife', 'cuckold', 'stag', 'tribute', '420', 'stoner']
     },
-    {
-      id: 'lifestyle',
-      label: 'Sober / Lifestyle',
-      color: '#10b981',
-      keywords: [
-        'zero proof', 'sober', 'alcohol-free', 'drug-free', 'substance-free',
-        'straight edge', 'clothing-optional', 'nudist', 'nude yoga', 'homeschool',
-        'evidence-based', 'bodily autonomy'
-      ]
-    },
-    {
-      id: 'neurotype',
-      label: 'Neurotype / Style',
-      color: '#fb7185',
-      keywords: [
-        'neurodivergent', 'autistic', 'autism', 'low-masking', 'intj', 'literal',
-        'plain english', 'direct communication', 'blunt', 'no mind games',
-        'analytical', 'engineer'
-      ]
-    },
-    {
-      id: 'local',
-      label: 'Local / PDX',
-      color: '#38bdf8',
-      keywords: [
-        'portland', 'pdx', 'oregon', 'pnw', 'pacific northwest',
-        'beaverton', 'hillsboro', 'vancouver', 'zero proof munch'
-      ]
-    },
-    {
-      id: 'geek',
-      label: 'Geek / Metal',
-      color: '#2dd4bf',
-      keywords: [
-        '3d print', 'coding', 'software', 'computer science', 'sci-fi',
-        'doom metal', 'industrial metal', 'heavy metal', 'tinkerer', 'dark chocolate'
+    strict_vanilla_filter: {
+      id: 'strict_vanilla_filter',
+      name: 'Exclude Heavy BDSM & Swap Dynamics',
+      description: 'Adds common heavy impact, restraint, D/s, and hotwife/cuckold terms to Excludes.',
+      highlightRules: [],
+      excludeKeywords: [
+        'restraint', 'ropes', 'shibari', 'blindfold', 'impact play', 'flogger',
+        'paddle', 'masochism', 'watersports', 'scat', 'ddlg', 'tpe', 'protocols',
+        'hotwife', 'cuckold', 'stag', 'findom', 'paypig', 'tribute'
       ]
     }
-  ];
-
-  const DEFAULT_EXCLUDE_KEYWORDS = [
-    'findom', 'paypig', 'tribute',
-    'restraint', 'ropes', 'shibari', 'blindfold', 'sensory deprivation',
-    'impact play', 'flogger', 'paddle', 'masochism', 'watersports', 'scat',
-    'ddlg', 'daddy/little', 'tpe', '24/7', 'protocols',
-    '420', 'stoner'
-  ];
+  };
 
   const DEFAULT_MESSAGE_TEMPLATES = [
     {
-      id: 'tpl_munch',
-      title: 'PDX Zero Proof Munch / Local Hello',
-      body: "Hey {username} — saw your profile and noticed we're both local to the PDX area. Michele and I regularly attend the PDX Zero Proof Munch if you ever want a low-stakes hello in a safe, alcohol-free public room, or happy to meet up at a quiet café for hot cocoa sometime. No pressure at all—just wanted to say hi."
-    },
-    {
-      id: 'tpl_writings',
-      title: 'About + Writings Pointer',
-      body: "Hello {username} — appreciated what you shared in your About section. If you're curious where my head is at, I put together two short pieces in my Writings ('I want a family, not a playmate. (Closed Vee): Where I am coming from.' and 'Dad Mode: The Reality of the Household (Building a Polyfidelity Vee)') that lay out what I'm looking for plainly. My profile also lays out what to expect and what I am looking for, in the interests of full disclosure. Would love to hear your thoughts if any of it resonates."
-    },
-    {
-      id: 'tpl_coffee',
-      title: 'Direct Quiet Café / Cocoa Invite',
-      body: "Hey {username} — saw your profile and noticed we're both local to the PDX area. I skip the noisy munches in favor of my weekly yoga class and quiet rooms where you can actually hear yourself think, so if you're ever up for a low-stakes hello over hot cocoa or coffee at a quiet café (either one-on-one or with Michele along to say hi), let me know. No pressure at all—just wanted to reach out."
+      id: 'tpl_hello',
+      title: 'Friendly Local Hello',
+      body: "Hey {username} — saw your profile and noticed we're in the same area. Would love to say hi if you're ever up for a low-stakes chat or coffee sometime. No pressure at all!"
     }
   ];
 
@@ -142,33 +173,111 @@
     { key: 'toggleMinimal', label: 'Toggle Focused Overlay Minimal' },
     { key: 'shortlist',     label: 'Shortlist Focused Card' },
     { key: 'pass',          label: 'Pass / Hide Focused Card' },
-    { key: 'cycleGender',   label: 'Cycle Gender (♀/♂/⚧/Auto)' },
+    { key: 'cycleGender',   label: 'Cycle Gender (♀/♂//auto)' },
     { key: 'note',          label: 'Edit Note on Card' },
     { key: 'openTab',       label: 'Open Profile in New Tab' }
   ];
 
+  // Neutral out-of-the-box defaults for any FetLife user; personalized via Self-Profile Learner, Preset Packs, or HUD toggles
   const DEFAULT_SETTINGS = {
-    excludeKeywords: DEFAULT_EXCLUDE_KEYWORDS,
-    highlightRules: DEFAULT_HIGHLIGHT_RULES,
+    excludeKeywords: [],
+    highlightRules: [],
+    customPacks: [],
     messageTemplates: DEFAULT_MESSAGE_TEMPLATES,
     keybinds: DEFAULT_KEYBINDS,
-    hideMode: 'dim',                  // 'dim' | 'collapse'
-    dimOpacity: 0.18,                 // 0.05 to 0.75
+    hideMode: 'remove',               // 'remove' (zero-height layout-safe hide) | 'dim'
+    dimOpacity: 0.18,
     showHidden: false,
     hideNoAbout: false,
-    genderFilter: 'female',           // 'all' | 'female' | 'male' | 'other'
+    localOnlyFilter: false,
+    localRegions: [],
+    allowUnknownLocationOnExplore: true,
+    exemptInteractedAndSocial: true,
+    relationshipFilter: 'all',        // 'all' | 'single' | 'partnered'
+    allowedGenders: {
+      female: true,
+      male: true,
+      other: true,
+      unknown: true
+    },
+    cacheMatchDisplayFilters: true,
+    cacheSkipPartnered: false,
+    batchRequireLocal: false,
+    enableChatStrip: true,
     filterByAge: false,
-    minAge: 30,
-    maxAge: 45,
-    autoSyncSelfKinks: true,          // Auto-sync own Fetishes (Into -> Shared Kink, Profile Limits -> Excludes)
+    minAge: 21,
+    maxAge: 65,
+    autoLearnFromSelf: true,
     paused: false,
-    hudPosition: 'bottom-right',      // 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left'
-    cardViewMode: 'full',             // 'full' | 'compact' | 'minimal' | 'off'
-    cardToolbarPosition: 'bottom',
+    hudPosition: 'bottom-right',
+    cardViewMode: 'full',
     stickyProfileBar: true,
     showNotesInline: true,
     bioCacheTtlDays: 14
   };
+
+  // =========================================================================
+  // 2. TERM SANITIZER: 2-WORD MAX FILTER & DUPLICATE DETECTOR
+  // =========================================================================
+  function normalizeTermKey(term) {
+    return String(term || '')
+      .toLowerCase()
+      .replace(/['’]/g, '')
+      .replace(/[^a-z0-9\s/-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function sanitizeTwoWordTerm(rawItem) {
+    if (!rawItem || typeof rawItem !== 'string') return null;
+
+    let cleaned = rawItem
+      .replace(/\([^)]*\)/g, ' ')
+      .replace(/["“”][^"“”]*["“”]/g, ' ')
+      .replace(/[—–;].*$/, '')
+      .replace(/^[-•*▪▫‣⁃>\s]+/, '')
+      .replace(/^(?:and|or|also|plus|strictly|absolutely|definitely|zero\s+on|zero|no|any|being)\s+/i, '')
+      .replace(/^(?:no|zero)\s+/i, '')
+      .replace(/[.!?:,]+$/, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (!cleaned || cleaned.length < 2 || cleaned.length > 32) return null;
+
+    const words = cleaned.split(/\s+/).filter(Boolean);
+    if (words.length === 0 || words.length > 2) return null;
+
+    if (/\b(?:i|me|my|we|our|you|your|it|is|are|was|were|be|been|have|has|had|do|does|did|need|want|like|love|great|good|bad|okay|ok|until|unless|because|since|when|while|if|that|which|who|for|to|from|into|with|without|requires?|gated|intact|mean|means|though|even)\b/i.test(cleaned)) {
+      return null;
+    }
+
+    if (/^(?:into|curious|likes?|yes|loves?|favou?rites?|about(?:\s+me)?|looking\s+for|soft\s+limits?|hard\s+limits?|limits?|safety|red\s+lines?)$/i.test(cleaned)) {
+      return null;
+    }
+
+    return cleaned;
+  }
+
+  function deduplicateTerms(incomingTerms, existingSet = new Set()) {
+    const seen = new Set(existingSet);
+    const unique = [];
+    const duplicates = [];
+
+    for (const raw of (incomingTerms || [])) {
+      const term = sanitizeTwoWordTerm(raw);
+      if (!term) continue;
+      const key = normalizeTermKey(term);
+      if (!key) continue;
+      if (seen.has(key)) {
+        duplicates.push(term);
+      } else {
+        seen.add(key);
+        unique.push(term);
+      }
+    }
+
+    return { unique, duplicates };
+  }
 
   const RESERVED_PATHS = new Set([
     'search', 'groups', 'events', 'places', 'writings', 'pictures', 'videos',
@@ -178,7 +287,7 @@
     'guidelines', 'safety', 'merch', 'gift_certificates', 'supporters', 'glossary',
     'chat', 'live', 'contact', 'logout', 'api', 'assets', 'notifications_settings',
     'inbox', 'verify', 'languages', 'legal', 'kinktionary', 'tiles', 'communities',
-    'mutes', 'likes', 'stories', 'feed_events', 'nav', 'sidebar', 'ama'
+    'mutes', 'likes', 'stories', 'feed_events', 'nav', 'sidebar', 'ama', 'stuff-you-love'
   ]);
 
   const PROFILE_SUBTABS = new Set([
@@ -187,13 +296,24 @@
     'collections', 'statuses', 'audios', 'profile', 'about'
   ]);
 
-  const LOCAL_PDX_TERMS = [
-    'portland', 'pdx', 'oregon', 'beaverton', 'hillsboro', 'lake oswego',
-    'tigard', 'milwaukie', 'gresham', 'vancouver', 'oregon city', 'west linn'
-  ];
+  const METRO_EXPANSIONS = {
+    'portland': ['portland', 'pdx', 'oregon', 'beaverton', 'hillsboro', 'lake oswego', 'tigard', 'milwaukie', 'gresham', 'vancouver, wa', 'vancouver, washington', 'oregon city', 'west linn', 'clackamas', 'tualatin', 'sherwood', 'troutdale', 'camas', 'washougal'],
+    'seattle': ['seattle', 'washington', 'bellevue', 'tacoma', 'redmond', 'kirkland', 'everett', 'renton', 'kent', 'olympia'],
+    'san francisco': ['san francisco', 'bay area', 'oakland', 'berkeley', 'san jose', 'california'],
+    'los angeles': ['los angeles', 'la', 'hollywood', 'santa monica', 'burbank', 'pasadena', 'long beach', 'california'],
+    'new york': ['new york', 'nyc', 'brooklyn', 'manhattan', 'queens', 'bronx', 'new jersey'],
+    'chicago': ['chicago', 'illinois', 'evanston', 'oak park'],
+    'austin': ['austin', 'texas', 'round rock', 'cedar park'],
+    'denver': ['denver', 'colorado', 'boulder', 'aurora', 'lakewood'],
+    'vancouver, bc': ['vancouver, bc', 'vancouver, british columbia', 'british columbia', 'burnaby', 'surrey', 'richmond']
+  };
 
+  const GENERIC_LOCATION_TEXT_RE = /\b([A-Z][a-zA-Z .'-]{1,28},\s*(?:[A-Z]{2}|[A-Z][a-zA-Z .'-]{2,26}))\b/;
+  const SINGLE_REL_RE = /\b(single|solo|unpartnered|available|divorced|widowed)\b/i;
+  const PARTNERED_REL_RE = /\b(married|partnered|engaged|in\s+a\s+relationship|polyamorous|poly|swinger|open\s+relationship|monogamous|nested|nesting|spouse|husband|wife|boyfriend|girlfriend|fianc[eé]e?|coupled)\b/i;
   const USERNAME_RE = /^[a-zA-Z0-9_.-]{2,36}$/;
 
+  // Gender token pattern (used only for testing, not in a giant alternation regex)
   const GENDER_TOKEN_PATTERN = [
     'Cisgender\\s*Female', 'Cisgender\\s*Woman', 'Cisgender\\s*Male', 'Cisgender\\s*Man',
     'Cis\\s*Female', 'Cis\\s*Woman', 'Cis\\s*Male', 'Cis\\s*Man', 'Cis\\s*F', 'Cis\\s*M',
@@ -208,27 +328,25 @@
     'W', 'F', 'M'
   ].join('|');
 
-  const DEMO_BADGE_START_RE = new RegExp(
-    `^\\s*([1-9]\\d)\\s*(${GENDER_TOKEN_PATTERN})(?![a-zA-Z0-9_])(?:\\s+([^·•|\\r\\n]{1,48}))?\\s*$`,
-    'i'
-  );
+  // Split into two passes to avoid catastrophic backtracking on long alternation
+  const GENDER_TOKEN_RE = new RegExp(`(${GENDER_TOKEN_PATTERN})`, 'i');
+  const AGE_GENDER_BADGE_RE = /^\s*([1-9]\d)\s+([^·•|\r\n]{1,48})\s*$/;
+  const AGE_GENDER_INLINE_RE = /(?:^|[\s·•|(]|[a-z_.-])([1-9]\d)\s+([A-Za-z][A-Za-z0-9 /&'’-]{0,38})/;
 
-  const DEMO_INLINE_SCAN_RE = new RegExp(
-    `(?:^|[\\s·•|(])([1-9]\\d)\\s*(${GENDER_TOKEN_PATTERN})(?![a-zA-Z0-9_])(?:[ \\t]+([A-Za-z0-9][A-Za-z0-9 /&'’-]{0,38}))?`,
-    'i'
-  );
-
-  const OTHER_GENDER_RE = /\b(nb|non-?binary|mtf|ftm|trans\s*woman|trans\s*female|trans\s*man|trans\s*male|transfeminine|transmasculine|transgender|transsexual|gf|genderfluid|gq|genderqueer|ag|agender|is|intersex|cd|crossdresser|tv|transvestite|two-?spirit|2s|demigirl|demiboy|bigender|pangender|genderflux|androgyne|gn|amab|afab)\b/i;
+  const OTHER_GENDER_RE = /\b(nb|non-?binary|mtf|ftm|trans\s*woman|trans\s*female|trans\s*girl|trans\s*man|trans\s*male|transfeminine|transmasculine|transgender|transsexual|trans\b|gf|genderfluid|gq|genderqueer|ag|agender|is|intersex|cd|crossdresser|tv|transvestite|two-?spirit|2s|demigirl|demiboy|bigender|pangender|genderflux|androgyne|gn|amab|afab)\b/i;
+  const BIO_NON_CIS_FEMALE_RE = /\b(mtf|trans\s*woman|trans\s*female|transfeminine|transgender\s*woman|amab|non-?binary|genderfluid)\b/i;
   const FEMALE_GENDER_RE = /^(f|w|female|cis\s*f|cis\s*female|cisgender\s*female|woman|cis\s*woman|cisgender\s*woman|femme)$/i;
   const MALE_GENDER_RE = /^(m|male|cis\s*m|cis\s*male|cisgender\s*male|man|cis\s*man|cisgender\s*man)$/i;
 
   const cardViewOverrides = new Map();
 
   // =========================================================================
-  // 2. STICKY VIEWPORT TRACKER (SYNCS WITH FETLIFE'S #main-nav)
+  // 3. STICKY VIEWPORT TRACKER & SCROLL GUARD
   // =========================================================================
   let stickyRafPending = false;
   let boundScrollEl = null;
+  let isUserScrolling = false;
+  let scrollIdleTimer = null;
 
   function syncStickyViewportOffset() {
     stickyRafPending = false;
@@ -243,25 +361,32 @@
     document.documentElement.style.setProperty('--flx-sticky-top', `${offsetTop}px`);
   }
 
-  function scheduleStickySync() {
-    if (stickyRafPending) return;
-    stickyRafPending = true;
-    requestAnimationFrame(syncStickyViewportOffset);
+  function handleScrollActivity() {
+    isUserScrolling = true;
+    clearTimeout(scrollIdleTimer);
+    scrollIdleTimer = setTimeout(() => {
+      isUserScrolling = false;
+    }, 300);
+
+    if (!stickyRafPending) {
+      stickyRafPending = true;
+      requestAnimationFrame(syncStickyViewportOffset);
+    }
   }
 
   function attachScrollListeners() {
     const mainContent = document.getElementById('main-content');
     if (mainContent && boundScrollEl !== mainContent) {
       boundScrollEl = mainContent;
-      mainContent.addEventListener('scroll', scheduleStickySync, { passive: true });
+      mainContent.addEventListener('scroll', handleScrollActivity, { passive: true });
     }
   }
 
-  window.addEventListener('scroll', scheduleStickySync, { passive: true });
-  window.addEventListener('resize', scheduleStickySync, { passive: true });
+  window.addEventListener('scroll', handleScrollActivity, { passive: true });
+  window.addEventListener('resize', handleScrollActivity, { passive: true });
 
   // =========================================================================
-  // 3. GENDER & AGE CLASSIFICATION, KEYBIND HELPERS & PERSISTENT STORAGE
+  // 4. GENDER, AGE, LOCATION & RELATIONSHIP CLASSIFICATION
   // =========================================================================
   function normalizeValidAge(val) {
     if (val === null || val === undefined || val === '') return null;
@@ -270,31 +395,36 @@
     return n;
   }
 
-  function extractAgeFromRoleString(roleStr) {
-    if (!roleStr || typeof roleStr !== 'string') return null;
-    const m = roleStr.trim().match(DEMO_BADGE_START_RE) || roleStr.trim().match(DEMO_INLINE_SCAN_RE);
-    return m ? normalizeValidAge(m[1]) : null;
+  function extractAgeGenderFromText(text) {
+    if (!text) return { age: null, genderToken: null, genderRole: null };
+    const lines = text.split(/[·•|\r\n]/).map(s => s.trim()).filter(Boolean);
+    for (const line of lines) {
+      const badgeMatch = line.match(AGE_GENDER_BADGE_RE);
+      if (badgeMatch) {
+        const age = normalizeValidAge(badgeMatch[1]);
+        const genderToken = badgeMatch[2].trim();
+        if (age && GENDER_TOKEN_RE.test(genderToken)) {
+          return { age, genderToken, genderRole: line };
+        }
+      }
+      const inlineMatch = line.match(AGE_GENDER_INLINE_RE);
+      if (inlineMatch) {
+        const age = normalizeValidAge(inlineMatch[1]);
+        const genderToken = inlineMatch[2].trim();
+        if (age && GENDER_TOKEN_RE.test(genderToken)) {
+          return { age, genderToken, genderRole: `${age} ${genderToken}` };
+        }
+      }
+    }
+    return { age: null, genderToken: null, genderRole: null };
   }
 
   function resolveEffectiveAge(record, cachedBio, liveDemos = null) {
-    const manualAge = normalizeValidAge(record?.manualAge);
-    if (manualAge !== null) return manualAge;
-
-    const liveAge = normalizeValidAge(liveDemos?.age);
-    if (liveAge !== null) return liveAge;
-
-    const cacheAge = normalizeValidAge(cachedBio?.age);
-    if (cacheAge !== null) return cacheAge;
-
-    const recAge = normalizeValidAge(record?.age);
-    if (recAge !== null) return recAge;
-
-    const fromRole = extractAgeFromRoleString(
-      liveDemos?.genderRole || cachedBio?.genderRole || record?.genderRole || ''
-    );
-    if (fromRole !== null) return fromRole;
-
-    return null;
+    return normalizeValidAge(record?.manualAge) ??
+      normalizeValidAge(liveDemos?.age) ??
+      normalizeValidAge(cachedBio?.age) ??
+      normalizeValidAge(record?.age) ??
+      extractAgeGenderFromText(liveDemos?.genderRole || cachedBio?.genderRole || record?.genderRole || '').age;
   }
 
   function classifyGenderToken(rawToken, explicitRowText = '') {
@@ -316,6 +446,12 @@
   }
 
   function inferAutoGender(record, cachedBio, liveDemos = null) {
+    const headerOrAbout = `${cachedBio?.headerText || ''} ${cachedBio?.aboutText || ''}`.trim();
+    if (headerOrAbout && BIO_NON_CIS_FEMALE_RE.test(headerOrAbout)) {
+      const m = headerOrAbout.match(BIO_NON_CIS_FEMALE_RE);
+      return { gender: m ? m[0] : 'Trans/NB', genderCategory: 'other' };
+    }
+
     if (liveDemos?.genderCategory) {
       return { gender: liveDemos.gender || null, genderCategory: liveDemos.genderCategory };
     }
@@ -327,9 +463,9 @@
     }
 
     const roleStr = liveDemos?.genderRole || cachedBio?.genderRole || record?.genderRole || '';
-    const m = roleStr.match(DEMO_BADGE_START_RE) || roleStr.match(DEMO_INLINE_SCAN_RE);
-    if (m && m[2]) {
-      return classifyGenderToken(m[2], liveDemos?.gender || cachedBio?.gender || '');
+    const extracted = extractAgeGenderFromText(roleStr);
+    if (extracted.genderToken) {
+      return classifyGenderToken(extracted.genderToken, liveDemos?.gender || cachedBio?.gender || '');
     }
 
     const rawG = liveDemos?.gender || cachedBio?.gender || (!record?.manualGender ? record?.gender : '');
@@ -343,44 +479,135 @@
 
   function resolveEffectiveGender(record, cachedBio, liveDemos = null) {
     const auto = inferAutoGender(record, cachedBio, liveDemos);
-
     if (record?.manualGender === 'female') {
-      return {
-        gender: '♀ Female (Manual)',
-        genderCategory: 'female',
-        isManual: true,
-        manualGender: 'female',
-        autoDetected: auto
-      };
+      return { gender: '♀ Female (Manual)', genderCategory: 'female', isManual: true, manualGender: 'female', autoDetected: auto };
     }
-
     if (record?.manualGender === 'male') {
-      return {
-        gender: '♂ Male (Manual)',
-        genderCategory: 'male',
-        isManual: true,
-        manualGender: 'male',
-        autoDetected: auto
-      };
+      return { gender: '♂ Male (Manual)', genderCategory: 'male', isManual: true, manualGender: 'male', autoDetected: auto };
     }
-
     if (record?.manualGender === 'other') {
-      return {
-        gender: '⚧ Other (Manual)',
-        genderCategory: 'other',
-        isManual: true,
-        manualGender: 'other',
-        autoDetected: auto
-      };
+      return { gender: ' transgender Other (Manual)', genderCategory: 'other', isManual: true, manualGender: 'other', autoDetected: auto };
+    }
+    return { gender: auto.gender, genderCategory: auto.genderCategory, isManual: false, manualGender: null, autoDetected: auto };
+  }
+
+  function classifyRelationshipStatus(relStr) {
+    if (!relStr || typeof relStr !== 'string') return null;
+    const clean = relStr.replace(/\s+/g, ' ').trim();
+    if (!clean) return null;
+    if (PARTNERED_REL_RE.test(clean)) return 'partnered';
+    if (SINGLE_REL_RE.test(clean)) return 'single';
+    return null;
+  }
+
+  function isLocationLocal(location, settings) {
+    const loc = (location || '').trim().toLowerCase();
+    if (!loc) return false;
+    const regions = Array.isArray(settings.localRegions) ? settings.localRegions : [];
+    if (regions.length === 0) return true;
+
+    if (loc.includes('vancouver')) {
+      const wantsWa = regions.some(r => r.includes('vancouver, wa') || r.includes('vancouver, washington') || r === 'oregon' || r === 'portland' || r === 'pdx');
+      const wantsBc = regions.some(r => r.includes('vancouver, bc') || r.includes('british columbia'));
+      if (loc.includes('british columbia') || /\bvancouver,\s*bc\b/.test(loc)) {
+        return wantsBc;
+      }
+      if (loc.includes('washington') || /\bvancouver,\s*wa\b/.test(loc)) {
+        return wantsWa;
+      }
+      // If user has both WA and BC regions, and location is just "vancouver" without state,
+      // default to BC (more specific) - or return true if either matches
+      return wantsWa || wantsBc;
     }
 
-    return {
-      gender: auto.gender,
-      genderCategory: auto.genderCategory,
-      isManual: false,
-      manualGender: null,
-      autoDetected: auto
-    };
+    return regions.some(term => {
+      const cleanTerm = term.trim().toLowerCase();
+      if (!cleanTerm) return false;
+      return loc.includes(cleanTerm);
+    });
+  }
+
+  function isConfirmedNonLocal(location, settings) {
+    const cleanLoc = (location || '').trim();
+    if (!cleanLoc) return false;
+    return !isLocationLocal(cleanLoc, settings);
+  }
+
+  function isConfirmedPartnered(relationships) {
+    return classifyRelationshipStatus(relationships) === 'partnered';
+  }
+
+  function hasProtectedInteractionOrSocial(record, liveSocial = null) {
+    if (!record && !liveSocial) return false;
+    if (record?.status === 'hidden') return false;
+    if (record?.status && ['shortlist', 'messaged', 'talking', 'met'].includes(record.status)) return true;
+    if (record?.note && record.note.trim().length > 0) return true;
+    if (record?.lastContacted) return true;
+    if (record?.isFriend || record?.isFollowing) return true;
+    if (liveSocial?.isFriend || liveSocial?.isFollowing) return true;
+    return false;
+  }
+
+  function detectLiveSocialRelation(container) {
+    if (!container || container.nodeType !== 1) return { isFriend: false, isFollowing: false };
+    let isFriend = false;
+    let isFollowing = false;
+
+    const forms = container.getElementsByTagName('form');
+    for (const f of forms) {
+      const action = (f.getAttribute('action') || '').toLowerCase();
+      if (action.includes('/unfollow')) isFollowing = true;
+      if (action.includes('/unfriend')) isFriend = true;
+    }
+
+    const candidates = container.querySelectorAll('button, a, span, div');
+    for (const el of candidates) {
+      if (el.closest('.flx-toolbar, .flx-profile-bar, .flx-chat-context')) continue;
+      if (el.children.length > 2) continue;
+      const txt = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!txt || txt.length > 28) continue;
+      if (/^(?:friends?|unfriend)$/i.test(txt)) isFriend = true;
+      else if (/^(?:following|unfollow)$/i.test(txt)) isFollowing = true;
+    }
+
+    return { isFriend, isFollowing };
+  }
+
+  function isGenderAllowedBySettings(genderCategory, settings) {
+    const allowed = settings.allowedGenders || { female: true, male: true, other: true, unknown: true };
+    if (!genderCategory) return allowed.unknown !== false;
+    return allowed[genderCategory] !== false;
+  }
+
+  function isProfileEligibleForAutoCache(candidate, settings) {
+    if (!settings.cacheMatchDisplayFilters) return true;
+    if (!isGenderAllowedBySettings(candidate.genderCategory || null, settings)) return false;
+
+    if (settings.localOnlyFilter && isConfirmedNonLocal(candidate.location || '', settings)) {
+      return false;
+    }
+
+    if (settings.cacheSkipPartnered && isConfirmedPartnered(candidate.relationships || '')) {
+      return false;
+    }
+
+    return true;
+  }
+
+  function buildCompositeSearchText(entry) {
+    if (!entry) return '';
+    const intoArr = Array.isArray(entry.fetishesInto) ? entry.fetishesInto : [];
+    const intoStr = intoArr.length > 0 ? `Into: ${intoArr.join(', ')}` : '';
+    const unsplitFetishes = intoArr.length === 0 ? (entry.fetishesRaw || entry.sections?.fetishes || '') : '';
+    const parts = [
+      entry.headerText || entry.sections?.header || '',
+      entry.aboutText || entry.sections?.about || '',
+      intoStr,
+      unsplitFetishes,
+      entry.writingsText || entry.sections?.writings || '',
+      entry.fallbackText || entry.text || ''
+    ].filter(Boolean);
+    return Array.from(new Set(parts)).join(' \n ');
   }
 
   function formatKeyComboFromEvent(e) {
@@ -494,29 +721,42 @@
   }
 
   const Store = {
+    _hasGmStorage() {
+      return typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
+    },
     _read(key, fallback) {
-      try {
-        if (typeof GM_getValue === 'function') {
+      if (this._hasGmStorage()) {
+        try {
           const val = GM_getValue(key, null);
           if (val !== null && val !== undefined) return val;
+        } catch (e) {
+          console.warn('[FLX] GM_getValue fallback:', e);
         }
-      } catch (e) {
-        console.warn('[FLX] GM_getValue fallback:', e);
       }
       try {
         const raw = localStorage.getItem(`flx_${key}`);
-        return raw ? JSON.parse(raw) : fallback;
-      } catch {
-        return fallback;
-      }
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (this._hasGmStorage()) {
+            try {
+              GM_setValue(key, parsed);
+              localStorage.removeItem(`flx_${key}`);
+            } catch {}
+          }
+          return parsed;
+        }
+      } catch {}
+      return fallback;
     },
     _write(key, value) {
-      try {
-        if (typeof GM_setValue === 'function') {
+      if (this._hasGmStorage()) {
+        try {
           GM_setValue(key, value);
+          try { localStorage.removeItem(`flx_${key}`); } catch {}
+          return;
+        } catch (e) {
+          console.warn('[FLX] GM_setValue fallback:', e);
         }
-      } catch (e) {
-        console.warn('[FLX] GM_setValue fallback:', e);
       }
       try {
         localStorage.setItem(`flx_${key}`, JSON.stringify(value));
@@ -524,60 +764,297 @@
         console.error('[FLX] Storage write failed:', e);
       }
     },
-    runOneTimeSanitization() {
-      if (this._read('fl_clean_v1120', false)) return;
+    getAllAvailablePacks() {
+      const s = this.getSettings();
+      const all = Object.assign({}, PRESET_PACKS);
+      for (const cp of (s.customPacks || [])) {
+        if (cp && cp.id) all[cp.id] = cp;
+      }
+      return all;
+    },
+    buildPackFromCurrentSettings(packName) {
+      const s = this.getSettings();
+      const existingSet = new Set();
+      const cleanRules = [];
+
+      for (const r of (s.highlightRules || [])) {
+        const { unique } = deduplicateTerms(r.keywords || [], existingSet);
+        if (unique.length > 0) {
+          cleanRules.push({
+            id: r.id || `rule_${Date.now()}`,
+            label: (r.label || 'Tag').trim(),
+            color: r.color || PALETTE.ui.accent,
+            keywords: unique
+          });
+        }
+      }
+
+      const { unique: cleanExcludes } = deduplicateTerms(s.excludeKeywords || [], existingSet);
+      return {
+        id: `custom_${Date.now()}`,
+        name: (packName || 'Custom Pack').trim(),
+        description: `Pack (${cleanRules.length} categories, ${cleanExcludes.length} excludes, ≤2 words, deduplicated).`,
+        highlightRules: cleanRules,
+        excludeKeywords: cleanExcludes
+      };
+    },
+    sanitizeAndStoreImportedPack(rawJson) {
+      const parsed = JSON.parse(rawJson);
+      const source = parsed.pack || parsed;
+      const seenTerms = new Set();
+      const cleanRules = [];
+
+      for (const r of (source.highlightRules || [])) {
+        const { unique } = deduplicateTerms(r.keywords || [], seenTerms);
+        if (unique.length > 0) {
+          cleanRules.push({
+            id: r.id || `imp_${Date.now()}_${cleanRules.length}`,
+            label: (r.label || 'Tag').trim(),
+            color: r.color || PALETTE.ui.accent,
+            keywords: unique
+          });
+        }
+      }
+
+      const { unique: cleanExcludes } = deduplicateTerms(source.excludeKeywords || [], seenTerms);
+      const packObj = {
+        id: source.id || `imported_${Date.now()}`,
+        name: (source.name || 'Imported Pack').trim(),
+        description: source.description || `Imported pack (${cleanRules.length} categories, ${cleanExcludes.length} excludes).`,
+        highlightRules: cleanRules,
+        excludeKeywords: cleanExcludes
+      };
+
+      const s = this.getSettings();
+      const others = (s.customPacks || []).filter(p => p.id !== packObj.id);
+      this.saveSettings({ customPacks: [...others, packObj] });
+      return packObj;
+    },
+    applyPresetPack(packId) {
+      const pack = this.getAllAvailablePacks()[packId];
+      if (!pack) return { rulesAdded: 0, excludesAdded: 0, duplicatesSkipped: 0 };
+
+      const s = this.getSettings();
+      const seenTerms = new Set();
+      let duplicatesSkipped = 0;
+
+      for (const ex of (s.excludeKeywords || [])) {
+        const k = normalizeTermKey(ex);
+        if (k) seenTerms.add(k);
+      }
+
+      const nextRules = (s.highlightRules || []).map(r => {
+        const cleanKws = [];
+        for (const kw of (r.keywords || [])) {
+          const valid = sanitizeTwoWordTerm(kw);
+          if (!valid) continue;
+          const k = normalizeTermKey(valid);
+          if (seenTerms.has(k)) duplicatesSkipped++;
+          else { seenTerms.add(k); cleanKws.push(valid); }
+        }
+        return Object.assign({}, r, { keywords: cleanKws });
+      });
+
+      let rulesAdded = 0;
+      for (const pRule of (pack.highlightRules || [])) {
+        const { unique, duplicates } = deduplicateTerms(pRule.keywords || [], seenTerms);
+        duplicatesSkipped += duplicates.length;
+        if (unique.length > 0) {
+          const existingIdx = nextRules.findIndex(r => normalizeTermKey(r.label) === normalizeTermKey(pRule.label));
+          if (existingIdx >= 0) nextRules[existingIdx].keywords = [...nextRules[existingIdx].keywords, ...unique];
+          else nextRules.push({ id: pRule.id || `pack_${Date.now()}_${rulesAdded}`, label: pRule.label, color: pRule.color || PALETTE.ui.accent, keywords: unique });
+          rulesAdded += unique.length;
+        }
+      }
+
+      const { unique: newExcludes, duplicates: exDupes } = deduplicateTerms(pack.excludeKeywords || [], seenTerms);
+      duplicatesSkipped += exDupes.length;
+      this.saveSettings({ highlightRules: nextRules, excludeKeywords: [...(s.excludeKeywords || []), ...newExcludes] });
+
+      return { rulesAdded, excludesAdded: newExcludes.length, duplicatesSkipped };
+    },
+    compactBioCacheEntry(key, rawEntry, isPassed = false) {
+      if (!rawEntry || typeof rawEntry !== 'object') return null;
+      const aboutText = (rawEntry.aboutText || rawEntry.sections?.about || '').trim();
+      const writingsText = (rawEntry.writingsText || rawEntry.sections?.writings || '').trim();
+      const headerText = (rawEntry.headerText || rawEntry.sections?.header || '').trim();
+      const fetishesInto = Array.isArray(rawEntry.fetishesInto) ? rawEntry.fetishesInto : [];
+      const fetishesLimits = Array.isArray(rawEntry.fetishesLimits) ? rawEntry.fetishesLimits : [];
+      const fetishesRaw = fetishesInto.length === 0
+        ? (rawEntry.fetishesRaw || rawEntry.sections?.fetishes || '').trim()
+        : '';
+
+      const fallbackText = (!aboutText && !writingsText && typeof rawEntry.text === 'string')
+        ? rawEntry.text.trim()
+        : '';
+
+      const hasAbout = typeof rawEntry.hasAbout === 'boolean'
+        ? (rawEntry.hasAbout || Boolean(aboutText))
+        : Boolean(aboutText);
+
+      if (isPassed) {
+        return {
+          username: rawEntry.username || null,
+          aboutText: '',
+          writingsText: '',
+          headerText: '',
+          fallbackText: '',
+          hasAbout,
+          fetishesInto: [],
+          fetishesLimits,
+          fetishesRaw: '',
+          age: normalizeValidAge(rawEntry.age),
+          gender: rawEntry.gender || null,
+          genderCategory: rawEntry.genderCategory || null,
+          genderRole: rawEntry.genderRole || null,
+          location: rawEntry.location || null,
+          relationships: rawEntry.relationships || null,
+          lookingFor: rawEntry.lookingFor || null,
+          groups: Array.isArray(rawEntry.groups) ? rawEntry.groups : [],
+          fetchedAt: rawEntry.fetchedAt || Date.now(),
+          slimmedPassed: true
+        };
+      }
+
+      return {
+        username: rawEntry.username || null,
+        aboutText,
+        writingsText,
+        headerText,
+        fallbackText,
+        hasAbout,
+        fetishesInto,
+        fetishesLimits,
+        fetishesRaw,
+        age: normalizeValidAge(rawEntry.age),
+        gender: rawEntry.gender || null,
+        genderCategory: rawEntry.genderCategory || null,
+        genderRole: rawEntry.genderRole || null,
+        location: rawEntry.location || null,
+        relationships: rawEntry.relationships || null,
+        lookingFor: rawEntry.lookingFor || null,
+        groups: Array.isArray(rawEntry.groups) ? rawEntry.groups : [],
+        fetchedAt: rawEntry.fetchedAt || Date.now()
+      };
+    },
+    compactAllStorage() {
       const users = this.getAllUsers();
       const cache = this.getBioCache();
-      let changed = false;
-      for (const [key, u] of Object.entries(users)) {
-        const c = cache[key];
-        if (!c) {
-          if (u.age !== null || u.genderRole !== null || (!u.manualGender && u.genderCategory !== null)) {
-            u.age = null;
-            u.genderRole = null;
-            if (!u.manualGender) {
-              u.gender = null;
-              u.genderCategory = null;
-            }
-            changed = true;
+      let compactedCount = 0;
+
+      for (const [key, entry] of Object.entries(cache)) {
+        const isPassed = users[key]?.status === 'hidden';
+        const slim = this.compactBioCacheEntry(key, entry, isPassed);
+        if (slim) {
+          cache[key] = slim;
+          compactedCount++;
+        }
+      }
+
+      this._write('fl_bio_cache', cache);
+      this._write('fl_users', users);
+      this._write('fl_settings', this.getSettings());
+      return compactedCount;
+    },
+    purgeExcludedFromCache() {
+      const settings = this.getSettings();
+      const users = this.getAllUsers();
+      const cache = this.getBioCache();
+      let removedCache = 0;
+      let removedUsers = 0;
+
+      const allKeys = new Set([...Object.keys(users), ...Object.keys(cache)]);
+      for (const key of allKeys) {
+        const u = users[key] || {};
+        const c = cache[key] || null;
+        const hasManualWork = Boolean(
+          u.status || u.manualGender || u.manualAge || u.isFriend || u.isFollowing || (u.note && u.note.trim().length > 0)
+        );
+        if (hasManualWork) continue;
+
+        const effectiveG = resolveEffectiveGender(u, c).genderCategory;
+        const loc = u.location || c?.location || '';
+        const rel = u.relationships || c?.relationships || '';
+        const fullTxt = c ? buildCompositeSearchText(c) : '';
+
+        const eligible = isProfileEligibleForAutoCache({
+          genderCategory: effectiveG,
+          location: loc,
+          relationships: rel,
+          fullText: fullTxt
+        }, settings);
+
+        if (!eligible) {
+          if (cache[key]) {
+            delete cache[key];
+            removedCache++;
+          }
+          if (users[key]) {
+            delete users[key];
+            removedUsers++;
           }
         }
       }
-      if (changed) this._write('fl_users', users);
-      this._write('fl_clean_v1120', true);
+
+      if (removedCache > 0) this._write('fl_bio_cache', cache);
+      if (removedUsers > 0) this._write('fl_users', users);
+      return { removedCache, removedUsers };
+    },
+    runOneTimeSanitization() {
+      if (!this._read('fl_v1150_migrated', false)) {
+        const saved = this._read('fl_settings', {});
+        const patch = {
+          hideMode: 'remove',
+          allowUnknownLocationOnExplore: true
+        };
+        if (!saved.allowedGenders && saved.genderFilter) {
+          if (saved.genderFilter === 'female') {
+            patch.allowedGenders = { female: true, male: false, other: false, unknown: true };
+          } else if (saved.genderFilter === 'male') {
+            patch.allowedGenders = { female: false, male: true, other: false, unknown: true };
+          } else if (saved.genderFilter === 'other') {
+            patch.allowedGenders = { female: false, male: false, other: true, unknown: true };
+          }
+        }
+        if (saved.localOnlyFilter && (!Array.isArray(saved.localRegions) || saved.localRegions.length === 0)) {
+          patch.localRegions = METRO_EXPANSIONS['portland'];
+        }
+        this.saveSettings(patch);
+        this.compactAllStorage();
+        this._write('fl_v1150_migrated', true);
+      }
     },
     getSettings() {
       const saved = this._read('fl_settings', {});
       const merged = Object.assign({}, DEFAULT_SETTINGS, saved);
 
-      if (!saved.cardViewMode && saved.cardToolbarMode) {
-        merged.cardViewMode = saved.cardToolbarMode;
+      if (merged.hideMode === 'collapse') {
+        merged.hideMode = 'remove';
       }
 
-      if (!saved.genderFilter && typeof saved.filterFemaleOnly === 'boolean') {
-        merged.genderFilter = saved.filterFemaleOnly ? 'female' : 'all';
-      }
+      merged.allowedGenders = Object.assign(
+        { female: true, male: true, other: true, unknown: true },
+        saved.allowedGenders || {}
+      );
 
+      merged.localRegions = Array.isArray(merged.localRegions) ? merged.localRegions : [];
+      merged.customPacks = Array.isArray(merged.customPacks) ? merged.customPacks : [];
+      merged.localOnlyFilter = Boolean(merged.localOnlyFilter);
+      merged.allowUnknownLocationOnExplore = merged.allowUnknownLocationOnExplore !== false;
+      merged.exemptInteractedAndSocial = merged.exemptInteractedAndSocial !== false;
+      merged.cacheMatchDisplayFilters = merged.cacheMatchDisplayFilters !== false;
+      merged.enableChatStrip = saved.enableChatStrip !== false;
       merged.filterByAge = Boolean(merged.filterByAge);
-      merged.minAge = normalizeValidAge(merged.minAge) ?? 30;
-      merged.maxAge = normalizeValidAge(merged.maxAge) ?? 45;
+      merged.minAge = normalizeValidAge(merged.minAge) ?? 21;
+      merged.maxAge = normalizeValidAge(merged.maxAge) ?? 65;
       if (merged.minAge > merged.maxAge) {
         const tmp = merged.minAge;
         merged.minAge = merged.maxAge;
         merged.maxAge = tmp;
       }
 
-      if (!Array.isArray(merged.highlightRules) || merged.highlightRules.length === 0) {
-        merged.highlightRules = JSON.parse(JSON.stringify(DEFAULT_HIGHLIGHT_RULES));
-      } else {
-        const existingIds = new Set(merged.highlightRules.map(r => r.id));
-        for (const defRule of DEFAULT_HIGHLIGHT_RULES) {
-          if (!existingIds.has(defRule.id)) {
-            merged.highlightRules.push(JSON.parse(JSON.stringify(defRule)));
-          }
-        }
-      }
-
+      if (!Array.isArray(merged.highlightRules)) merged.highlightRules = [];
+      if (!Array.isArray(merged.excludeKeywords)) merged.excludeKeywords = [];
       if (!Array.isArray(merged.messageTemplates) || merged.messageTemplates.length === 0) {
         merged.messageTemplates = JSON.parse(JSON.stringify(DEFAULT_MESSAGE_TEMPLATES));
       }
@@ -590,31 +1067,21 @@
       this._write('fl_settings', next);
       return next;
     },
-    resetRulesToDefaults() {
-      return this.saveSettings({
-        highlightRules: JSON.parse(JSON.stringify(DEFAULT_HIGHLIGHT_RULES)),
-        excludeKeywords: [...DEFAULT_EXCLUDE_KEYWORDS]
-      });
-    },
-    resetTemplatesToDefaults() {
-      return this.saveSettings({
-        messageTemplates: JSON.parse(JSON.stringify(DEFAULT_MESSAGE_TEMPLATES))
-      });
-    },
     resetKeybindsToDefaults() {
-      return this.saveSettings({
-        keybinds: Object.assign({}, DEFAULT_KEYBINDS)
-      });
+      return this.saveSettings({ keybinds: Object.assign({}, DEFAULT_KEYBINDS) });
     },
     getSelfProfile() {
       return this._read('fl_self_profile', {
         id: null,
         key: null,
         username: null,
+        genderCategory: null,
+        orientation: null,
+        lookingFor: null,
+        location: null,
         fetishesInto: [],
         fetishesLimits: [],
         groups: [],
-        lookingFor: null,
         syncedAt: null
       });
     },
@@ -627,63 +1094,75 @@
       }
       return next;
     },
-    syncSelfKinksToRules(selfData) {
-      const intoList = Array.isArray(selfData?.fetishesInto) ? selfData.fetishesInto : [];
-      const limitsList = Array.isArray(selfData?.fetishesLimits) ? selfData.fetishesLimits : [];
-      if (intoList.length === 0 && limitsList.length === 0) return { intoAdded: 0, limitsAdded: 0 };
-
+    learnPreferencesFromSelf(selfData, applyGenderAndLocation = false) {
       const settings = this.getSettings();
       const rules = Array.isArray(settings.highlightRules) ? [...settings.highlightRules] : [];
+      const patch = {};
+      const seenTerms = new Set();
 
+      const intoList = Array.isArray(selfData?.fetishesInto) ? selfData.fetishesInto : [];
+      const { unique: cleanKinks } = deduplicateTerms(intoList, seenTerms);
       let intoAdded = 0;
-      if (intoList.length > 0) {
-        const cleanKinks = Array.from(new Set(
-          intoList
-            .map(k => (k || '').trim())
-            .filter(k => k.length >= 3 && k.length <= 48)
-        ));
-        if (cleanKinks.length > 0) {
-          const existingRuleIdx = rules.findIndex(r => r.id === 'self_kinks');
-          const selfRule = {
-            id: 'self_kinks',
-            label: 'Shared Kink',
-            color: '#ec4899',
-            keywords: cleanKinks
-          };
-          if (existingRuleIdx >= 0) {
-            rules[existingRuleIdx] = selfRule;
-          } else {
-            rules.push(selfRule);
+      if (cleanKinks.length > 0) {
+        const idx = rules.findIndex(r => r.id === 'self_kinks');
+        const selfRule = { id: 'self_kinks', label: 'Shared Kink', color: PALETTE.ui.warm, keywords: cleanKinks };
+        if (idx >= 0) rules[idx] = selfRule;
+        else rules.push(selfRule);
+        intoAdded = cleanKinks.length;
+      }
+
+      const limitsList = Array.isArray(selfData?.fetishesLimits) ? selfData.fetishesLimits : [];
+      const existingExSet = new Set((settings.excludeKeywords || []).map(k => normalizeTermKey(k)).filter(Boolean));
+      const { unique: newExcludes } = deduplicateTerms(limitsList, existingExSet);
+      const nextExcludes = [...(settings.excludeKeywords || []), ...newExcludes];
+
+      patch.highlightRules = rules;
+      patch.excludeKeywords = nextExcludes;
+
+      if (applyGenderAndLocation) {
+        const ori = (selfData?.orientation || '').toLowerCase();
+        const selfG = selfData?.genderCategory || null;
+        if (ori && selfG) {
+          if (/\b(straight|heterosexual|heteroflexible)\b/.test(ori)) {
+            if (selfG === 'male') {
+              patch.allowedGenders = { female: true, male: false, other: false, unknown: true };
+            } else if (selfG === 'female') {
+              patch.allowedGenders = { female: false, male: true, other: false, unknown: true };
+            }
+          } else if (/\b(gay|lesbian|homosexual)\b/.test(ori)) {
+            if (selfG === 'male') {
+              patch.allowedGenders = { female: false, male: true, other: false, unknown: true };
+            } else if (selfG === 'female') {
+              patch.allowedGenders = { female: true, male: false, other: false, unknown: true };
+            }
+          } else if (/\b(bi|bisexual|pansexual|queer|omnisexual|skoliosexual)\b/.test(ori)) {
+            patch.allowedGenders = { female: true, male: true, other: true, unknown: true };
           }
-          intoAdded = cleanKinks.length;
+        }
+
+        const loc = (selfData?.location || '').trim();
+        if (loc) {
+          const parts = loc.split(',').map(p => p.trim().toLowerCase()).filter(Boolean);
+          const city = parts[0] || '';
+          const stateOrCountry = parts[1] || '';
+          let expanded = METRO_EXPANSIONS[city] || METRO_EXPANSIONS[`${city}, ${stateOrCountry}`] || null;
+          if (!expanded) {
+            expanded = Array.from(new Set([city, stateOrCountry].filter(x => x.length >= 2)));
+          }
+          if (expanded.length > 0) {
+            patch.localRegions = expanded;
+            patch.localOnlyFilter = true;
+          }
         }
       }
 
-      let limitsAdded = 0;
-      const excludeSet = new Set((settings.excludeKeywords || []).map(k => k.toLowerCase().trim()).filter(Boolean));
-      const nextExcludes = [...(settings.excludeKeywords || [])];
-      for (const lim of limitsList) {
-        const cleaned = (lim || '').trim();
-        const lower = cleaned.toLowerCase();
-        if (cleaned.length >= 3 && !excludeSet.has(lower)) {
-          excludeSet.add(lower);
-          nextExcludes.push(cleaned);
-          limitsAdded++;
-        }
-      }
-
-      this.saveSettings({
-        highlightRules: rules,
-        excludeKeywords: nextExcludes
-      });
+      this.saveSettings(patch);
       this.saveSelfProfile({ syncedAt: Date.now() });
-      return { intoAdded, limitsAdded };
+      return { intoAdded, limitsAdded: newExcludes.length };
     },
     getSelfGroups() {
       const selfProf = this.getSelfProfile();
-      if (Array.isArray(selfProf.groups) && selfProf.groups.length > 0) {
-        return selfProf.groups;
-      }
+      if (Array.isArray(selfProf.groups) && selfProf.groups.length > 0) return selfProf.groups;
       const arr = this._read('fl_self_groups', []);
       return Array.isArray(arr) ? arr : [];
     },
@@ -703,6 +1182,8 @@
         note: '',
         lastSeen: null,
         lastContacted: null,
+        isFriend: false,
+        isFollowing: false,
         username: null,
         age: null,
         manualAge: null,
@@ -723,9 +1204,7 @@
 
       if (Object.prototype.hasOwnProperty.call(patch, 'manualAge')) {
         next.manualAge = normalizeValidAge(patch.manualAge);
-        if (next.manualAge !== null) {
-          next.age = next.manualAge;
-        }
+        if (next.manualAge !== null) next.age = next.manualAge;
       }
       if (Object.prototype.hasOwnProperty.call(patch, 'age')) {
         next.age = next.manualAge ?? normalizeValidAge(patch.age);
@@ -754,8 +1233,9 @@
         } else if (patch.manualGender === 'other') {
           next.manualGender = 'other';
           next.genderCategory = 'other';
-          next.gender = '⚧ Other (Manual)';
+          next.gender = ' transgender Other (Manual)';
         } else {
+          // Explicit null or undefined → reset to auto-detect
           next.manualGender = null;
           const cached = this.getBioCache()[key] || null;
           const auto = inferAutoGender({}, cached);
@@ -770,11 +1250,20 @@
         next.gender = '♂ Male (Manual)';
       } else if (next.manualGender === 'other') {
         next.genderCategory = 'other';
-        next.gender = '⚧ Other (Manual)';
+        next.gender = ' transgender Other (Manual)';
       }
 
       db[key] = next;
       this._write('fl_users', db);
+
+      if (patch.status === 'hidden' && prev.status !== 'hidden') {
+        const cache = this.getBioCache();
+        if (cache[key]) {
+          cache[key] = this.compactBioCacheEntry(key, cache[key], true);
+          this._write('fl_bio_cache', cache);
+        }
+      }
+
       return next;
     },
     deleteUserAndCache(key) {
@@ -795,12 +1284,14 @@
     getStorageStats() {
       const settingsStr = JSON.stringify(this.getSettings());
       const usersStr = JSON.stringify(this.getAllUsers());
-      const cacheStr = JSON.stringify(this.getBioCache());
+      const cache = this.getBioCache();
+      const cacheStr = JSON.stringify(cache);
       const totalBytes = settingsStr.length + usersStr.length + cacheStr.length;
       return {
         kb: (totalBytes / 1024).toFixed(1),
-        cacheCount: Object.keys(this.getBioCache()).length,
-        userCount: Object.keys(this.getAllUsers()).length
+        cacheCount: Object.keys(cache).length,
+        userCount: Object.keys(this.getAllUsers()).length,
+        backend: this._hasGmStorage() ? 'GM' : 'localStorage'
       };
     },
     pruneExpiredCache() {
@@ -818,8 +1309,8 @@
         if (!isExpired) continue;
 
         const u = users[key];
-        const isTracked = Boolean(u && (u.status || u.manualGender || u.manualAge || (u.note && u.note.trim().length > 0)));
-        if (isTracked) {
+        const isTracked = Boolean(u && (u.status || u.manualGender || u.manualAge || u.isFriend || u.isFollowing || (u.note && u.note.trim().length > 0)));
+        if (isTracked && u.status !== 'hidden') {
           retainedTracked++;
         } else {
           delete cache[key];
@@ -832,21 +1323,61 @@
     },
     getCachedBio(key, ttlDays) {
       const cache = this.getBioCache();
-      const entry = cache[key];
-      if (!entry || typeof entry.text !== 'string') return null;
+      const raw = cache[key];
+      if (!raw) return null;
 
       const u = this.getUser(key);
-      const isTracked = Boolean(u.status || u.manualGender || u.manualAge || (u.note && u.note.trim().length > 0));
+      const isTracked = Boolean(u.status || u.manualGender || u.manualAge || u.isFriend || u.isFollowing || (u.note && u.note.trim().length > 0));
       if (!isTracked) {
         const maxAgeMs = Math.max(1, Number(ttlDays) || 14) * 86400000;
-        if (Date.now() - (entry.fetchedAt || 0) > maxAgeMs) return null;
+        if (Date.now() - (raw.fetchedAt || 0) > maxAgeMs) return null;
       }
-      return entry;
+
+      const hydrated = Object.assign({}, raw);
+      hydrated.aboutText = raw.aboutText || raw.sections?.about || '';
+      hydrated.writingsText = raw.writingsText || raw.sections?.writings || '';
+      hydrated.text = buildCompositeSearchText(raw);
+      return hydrated;
     },
     mergeCachedProfile(key, incoming, username = null) {
+      const settings = this.getSettings();
       const cache = this.getBioCache();
       const prev = cache[key] || {};
-      const prevSections = prev.sections || {};
+      const u = this.getUser(key);
+      const isPassed = u.status === 'hidden';
+
+      const prevAbout = prev.aboutText || prev.sections?.about || '';
+      const prevWritings = prev.writingsText || prev.sections?.writings || '';
+      const prevHeader = prev.headerText || prev.sections?.header || '';
+
+      const nextAbout = isPassed ? '' : (incoming.aboutText || prevAbout);
+      const nextWritings = isPassed ? '' : (incoming.writingsText || prevWritings);
+      const nextHeader = isPassed ? '' : (incoming.headerText || prevHeader);
+
+      let nextGenderCategory = incoming.genderCategory || prev.genderCategory || null;
+      let nextGender = incoming.gender || prev.gender || null;
+      const combinedBioCheck = `${nextHeader} ${nextAbout}`;
+      if (combinedBioCheck && BIO_NON_CIS_FEMALE_RE.test(combinedBioCheck)) {
+        const m = combinedBioCheck.match(BIO_NON_CIS_FEMALE_RE);
+        nextGenderCategory = 'other';
+        nextGender = m ? m[0] : 'Trans/NB';
+      }
+
+      const effectiveGenderCat = u.manualGender || nextGenderCategory;
+      const resolvedLocation = incoming.location || prev.location || u.location || null;
+      const resolvedRelationships = incoming.relationships || prev.relationships || u.relationships || null;
+      const hasManualWork = Boolean(
+        u.status || u.manualGender || u.manualAge || u.isFriend || u.isFollowing || (u.note && u.note.trim().length > 0)
+      );
+
+      if (!hasManualWork && !isProfileEligibleForAutoCache({
+        genderCategory: effectiveGenderCat,
+        location: resolvedLocation,
+        relationships: resolvedRelationships,
+        fullText: `${nextHeader} ${nextAbout}`
+      }, settings)) {
+        return null;
+      }
 
       const nextInto = (incoming.fetishesInto && incoming.fetishesInto.length > 0)
         ? incoming.fetishesInto
@@ -854,91 +1385,72 @@
       const nextLimits = (incoming.fetishesLimits && incoming.fetishesLimits.length > 0)
         ? incoming.fetishesLimits
         : (prev.fetishesLimits || []);
-
       const nextGroups = (incoming.groups && incoming.groups.length > 0)
         ? incoming.groups
         : (prev.groups || []);
 
-      const intoText = nextInto.length > 0 ? `Into: ${nextInto.join(', ')}` : '';
-      const limitsText = nextLimits.length > 0 ? nextLimits.join(', ') : (prevSections.fetishesLimits || '');
-
-      const unsplitFetishes = (nextInto.length === 0 && nextLimits.length === 0)
-        ? (incoming.fetishesText || prevSections.fetishes || '')
+      const nextFetishesRaw = (!isPassed && nextInto.length === 0)
+        ? (incoming.fetishesText || prev.fetishesRaw || prev.sections?.fetishes || '')
         : '';
 
-      const nextSections = {
-        about: incoming.aboutText || prevSections.about || prev.aboutText || '',
-        fetishes: incoming.fetishesText || prevSections.fetishes || '',
-        fetishesInto: intoText,
-        fetishesLimits: limitsText,
-        writings: incoming.writingsText || prevSections.writings || '',
-        header: incoming.headerText || prevSections.header || ''
-      };
-
       const hasAbout = typeof incoming.hasAbout === 'boolean'
-        ? (incoming.hasAbout || Boolean(nextSections.about))
-        : Boolean(prev.hasAbout || nextSections.about);
+        ? (incoming.hasAbout || Boolean(nextAbout || prevAbout))
+        : Boolean(prev.hasAbout || nextAbout);
 
-      const positiveParts = [
-        nextSections.header,
-        nextSections.about,
-        nextSections.fetishesInto,
-        unsplitFetishes,
-        nextSections.writings,
-        incoming.nonFetishFullText || prev.text || ''
-      ].filter(Boolean);
-
-      const combinedPositiveText = Array.from(new Set(positiveParts)).join(' \n ').slice(0, 24000);
-      const nextGenderCategory = incoming.genderCategory || prev.genderCategory || null;
       const resolvedAge = normalizeValidAge(incoming.age) ?? normalizeValidAge(prev.age) ?? null;
 
-      const nextEntry = {
+      const storedEntry = {
         username: username || prev.username || null,
-        text: combinedPositiveText,
-        aboutText: nextSections.about.slice(0, 8000),
+        aboutText: nextAbout,
+        writingsText: nextWritings,
+        headerText: nextHeader,
+        fallbackText: (!nextAbout && !nextWritings) ? (incoming.nonFetishFullText || prev.fallbackText || '') : '',
         hasAbout,
-        fetishesInto: nextInto,
+        fetishesInto: isPassed ? [] : nextInto,
         fetishesLimits: nextLimits,
-        limitsText: limitsText.slice(0, 4000),
-        sections: nextSections,
+        fetishesRaw: nextFetishesRaw,
         age: resolvedAge,
-        gender: incoming.gender || prev.gender || null,
+        gender: nextGender,
         genderCategory: nextGenderCategory,
         genderRole: incoming.genderRole || prev.genderRole || null,
-        location: incoming.location || prev.location || null,
-        relationships: incoming.relationships || prev.relationships || null,
+        location: resolvedLocation,
+        relationships: resolvedRelationships,
         lookingFor: incoming.lookingFor || prev.lookingFor || null,
         groups: nextGroups,
         fetchedAt: Date.now()
       };
 
-      cache[key] = nextEntry;
+      cache[key] = storedEntry;
       this._write('fl_bio_cache', cache);
 
-      const u = this.getUser(key);
       const userPatch = {
         username: username || u.username || null,
         age: u.manualAge ?? resolvedAge ?? normalizeValidAge(u.age) ?? null,
-        genderRole: nextEntry.genderRole || u.genderRole || null,
-        location: nextEntry.location || u.location || null,
-        relationships: nextEntry.relationships || u.relationships || null,
-        lookingFor: nextEntry.lookingFor || u.lookingFor || null,
+        genderRole: storedEntry.genderRole || u.genderRole || null,
+        location: storedEntry.location || u.location || null,
+        relationships: storedEntry.relationships || u.relationships || null,
+        lookingFor: storedEntry.lookingFor || u.lookingFor || null,
         groups: nextGroups.length > 0 ? nextGroups : (u.groups || [])
       };
 
       if (!u.manualGender) {
-        userPatch.gender = nextEntry.gender || u.gender || null;
-        userPatch.genderCategory = nextEntry.genderCategory || u.genderCategory || null;
+        userPatch.gender = storedEntry.gender || u.gender || null;
+        userPatch.genderCategory = storedEntry.genderCategory || u.genderCategory || null;
       }
 
       this.setUser(key, userPatch);
-      return nextEntry;
+
+      const hydrated = Object.assign({}, storedEntry);
+      hydrated.text = buildCompositeSearchText(storedEntry);
+      return hydrated;
     },
     clearBioCache() {
       this._write('fl_bio_cache', {});
     },
     exportAll() {
       return JSON.stringify({
+        version: '1.17.2',
+        exportedAt: new Date().toISOString(),
         settings: this.getSettings(),
         users: this.getAllUsers(),
         bioCache: this.getBioCache(),
@@ -950,22 +1462,25 @@
       const parsed = JSON.parse(jsonText);
       if (parsed.settings) this._write('fl_settings', Object.assign({}, DEFAULT_SETTINGS, parsed.settings));
       if (parsed.users) this._write('fl_users', parsed.users);
-      if (parsed.bioCache) this._write('fl_bio_cache', parsed.bioCache);
+      if (parsed.bioCache) {
+        this._write('fl_bio_cache', parsed.bioCache);
+        this.compactAllStorage();
+      }
       if (Array.isArray(parsed.selfGroups)) this._write('fl_self_groups', parsed.selfGroups);
       if (parsed.selfProfile) this._write('fl_self_profile', parsed.selfProfile);
     }
   };
 
   // =========================================================================
-  // 4. SELF-IDENTITY DETECTOR, SCOPED DEMOGRAPHIC PARSER & DOM HELPERS
+  // 5. SELF-IDENTITY DETECTOR, SCOPED DEMOGRAPHIC PARSER & DOM HELPERS
   // =========================================================================
   function hexToRgba(hex, alpha) {
-    const clean = (hex || '#38bdf8').replace('#', '').trim();
+    const clean = (hex || PALETTE.ui.accent).replace('#', '').trim();
     const full = clean.length === 3
       ? clean.split('').map(c => c + c).join('')
       : clean.padEnd(6, '0').slice(0, 6);
     const num = parseInt(full, 16);
-    if (Number.isNaN(num)) return `rgba(56, 189, 248, ${alpha})`;
+    if (Number.isNaN(num)) return `rgba(122, 163, 184, ${alpha})`;
     const r = (num >> 16) & 255;
     const g = (num >> 8) & 255;
     const b = num & 255;
@@ -1138,6 +1653,7 @@
     let explicitGenderRow = '';
     let explicitAgeRow = null;
     let relationships = null;
+    let orientation = null;
     let lookingFor = null;
     const locationParts = [];
 
@@ -1164,7 +1680,7 @@
       const href = a.getAttribute('href') || '';
       if (href.startsWith('/p/')) {
         const locLabel = (a.textContent || '').replace(/\s+/g, ' ').trim();
-        if (locLabel && locLabel.toLowerCase() !== 'united states' && !locationParts.includes(locLabel)) {
+        if (locLabel && !locationParts.includes(locLabel)) {
           locationParts.push(locLabel);
         }
       }
@@ -1184,6 +1700,8 @@
           explicitAgeRow = normalizeValidAge(val);
         } else if (/^relationships?$/i.test(label)) {
           relationships = val;
+        } else if (/^orientation$/i.test(label)) {
+          orientation = val;
         } else if (/^looking\s+for$/i.test(label)) {
           lookingFor = val;
         }
@@ -1198,22 +1716,26 @@
       const parentEl = txtNode.parentElement;
       if (parentEl && parentEl.closest('a[href^="/p/"]')) continue;
       const val = (txtNode.nodeValue || '').replace(/\s+/g, ' ').trim();
-      if (val.length >= 2 && val.length <= 64) {
+      if (val.length >= 2 && val.length <= 80) {
         candidateStrings.push(val);
       }
     }
 
-    const spans = scanRoot.querySelectorAll('span, div, p, small');
+    const spans = scanRoot.querySelectorAll('span, div, p, small, header, a');
     for (const sp of spans) {
       if (isInsideExcludedSubtree(sp)) continue;
-      if (sp.children.length <= 2) {
+      const titleAttr = sp.getAttribute && (sp.getAttribute('title') || sp.getAttribute('aria-label'));
+      if (titleAttr && titleAttr.length >= 2 && titleAttr.length <= 80) {
+        candidateStrings.push(titleAttr.trim());
+      }
+      if (sp.children.length <= 5) {
         const spacedText = Array.from(sp.childNodes)
           .map(n => (n.textContent || '').trim())
           .filter(Boolean)
           .join(' ')
           .replace(/\s+/g, ' ')
           .trim();
-        if (spacedText.length >= 2 && spacedText.length <= 64) {
+        if (spacedText.length >= 2 && spacedText.length <= 100) {
           candidateStrings.push(spacedText);
         }
       }
@@ -1223,33 +1745,16 @@
       const subParts = rawSeg.split(/\r?\n|·|•|\|/).map(s => s.trim()).filter(Boolean);
       for (const seg of subParts) {
         if (!isLikelyDemoBadgeString(seg)) continue;
-        const m = seg.match(DEMO_BADGE_START_RE);
-        if (m) {
-          const parsedAge = normalizeValidAge(m[1]);
-          const gTok = m[2] || null;
-          if (parsedAge !== null && gTok) {
-            age = parsedAge;
-            rawGenderToken = gTok;
-            genderRole = seg;
-            break;
-          }
+        const extracted = extractAgeGenderFromText(seg);
+        if (extracted.age !== null && extracted.genderToken) {
+          age = extracted.age;
+          rawGenderToken = extracted.genderToken;
+          genderRole = extracted.genderRole;
         }
-      }
-      if (age !== null) break;
-    }
-
-    if (age === null) {
-      for (const rawSeg of candidateStrings) {
-        if (!isLikelyDemoBadgeString(rawSeg)) continue;
-        const m = rawSeg.match(DEMO_INLINE_SCAN_RE);
-        if (m) {
-          const parsedAge = normalizeValidAge(m[1]);
-          if (parsedAge !== null && m[2]) {
-            age = parsedAge;
-            rawGenderToken = m[2];
-            const rolePart = (m[3] || '').trim();
-            genderRole = [`${parsedAge}${rawGenderToken}`, rolePart].filter(Boolean).join(' ');
-            break;
+        if (locationParts.length === 0) {
+          const locMatch = seg.match(GENERIC_LOCATION_TEXT_RE);
+          if (locMatch && locMatch[1]) {
+            locationParts.push(locMatch[1].trim());
           }
         }
       }
@@ -1268,6 +1773,7 @@
       genderRole,
       location: locationParts.length > 0 ? locationParts.slice(0, 2).join(', ') : null,
       relationships,
+      orientation,
       lookingFor
     };
   }
@@ -1282,9 +1788,7 @@
       if (!href.startsWith('/groups/')) continue;
       let title = '';
       for (const child of a.childNodes) {
-        if (child.nodeType === 3) {
-          title += child.nodeValue;
-        }
+        if (child.nodeType === 3) title += child.nodeValue;
       }
       title = title.replace(/\s+/g, ' ').trim();
       if (!title) {
@@ -1292,9 +1796,7 @@
         clone.querySelectorAll('div, span').forEach(n => n.remove());
         title = (clone.textContent || '').replace(/\s+/g, ' ').trim();
       }
-      if (title && !groups.includes(title)) {
-        groups.push(title);
-      }
+      if (title && !groups.includes(title)) groups.push(title);
     }
     return groups;
   }
@@ -1302,17 +1804,7 @@
   function getSharedOrNotableGroups(userGroups) {
     if (!Array.isArray(userGroups) || userGroups.length === 0) return [];
     const selfGroups = new Set(Store.getSelfGroups().map(g => g.toLowerCase()));
-    const matches = [];
-    for (const g of userGroups) {
-      const lower = g.toLowerCase();
-      if (lower === 'fetlife announcements') continue;
-      const inSelf = selfGroups.has(lower);
-      const isNotableLocal = /pdx|portland|zero proof|nerd|poly|co-?parent|vee|neurodivergent|autis/i.test(lower);
-      if (inSelf || isNotableLocal) {
-        matches.push(g);
-      }
-    }
-    return matches;
+    return userGroups.filter(g => g.toLowerCase() !== 'fetlife announcements' && selfGroups.has(g.toLowerCase()));
   }
 
   function detectCurrentProfilePage() {
@@ -1352,9 +1844,7 @@
       for (const a of navLinks) {
         if (a.getAttribute('aria-current') === 'page') {
           const tabHrefParsed = parseUserHref(a.getAttribute('href'));
-          if (tabHrefParsed) {
-            activeView = tabHrefParsed.subtab || 'about';
-          }
+          if (tabHrefParsed) activeView = tabHrefParsed.subtab || 'about';
           break;
         }
       }
@@ -1373,20 +1863,11 @@
       const dwellParsed = parseUserHref(container.dataset.dwellAuthorPath);
       if (dwellParsed && dwellParsed.username) {
         const demos = parseDemographicsFromContainer(container);
-        return {
-          key: dwellParsed.key,
-          username: dwellParsed.username,
-          profileUrl: dwellParsed.url,
-          demographics: demos
-        };
+        return { key: dwellParsed.key, username: dwellParsed.username, profileUrl: dwellParsed.url, demographics: demos };
       }
     }
 
-    let username = initialParsed.username;
-
-    if (!username) {
-      username = cleanHandleCandidate(link.textContent);
-    }
+    let username = initialParsed.username || cleanHandleCandidate(link.textContent);
 
     const headerScope = container.tagName === 'ARTICLE'
       ? (container.querySelector('header') || link.parentElement || container)
@@ -1408,29 +1889,14 @@
     const demos = parseDemographicsFromContainer(container);
 
     if (username) {
-      return {
-        key: username.toLowerCase(),
-        username,
-        profileUrl: `${window.location.origin}/${username}`,
-        demographics: demos
-      };
+      return { key: username.toLowerCase(), username, profileUrl: `${window.location.origin}/${username}`, demographics: demos };
     }
-
-    return {
-      key: initialParsed.key,
-      username: null,
-      profileUrl: initialParsed.url,
-      demographics: demos
-    };
+    return { key: initialParsed.key, username: null, profileUrl: initialParsed.url, demographics: demos };
   }
 
   function containsEditableComposer(el) {
     if (!el || el.nodeType !== 1) return false;
-    return Boolean(
-      el.querySelector(
-        'textarea, lexxy-editor, [contenteditable="true"], input[type="text"], input[type="search"]'
-      )
-    );
+    return Boolean(el.querySelector('textarea, lexxy-editor, [contenteditable="true"], input[type="text"], input[type="search"]'));
   }
 
   function findPostOrCardContainer(link, root) {
@@ -1462,15 +1928,29 @@
       return null;
     }
 
+    const masonry = link.closest('fl-masonry');
+    if (masonry && root.contains(masonry)) {
+      let tile = link.parentElement;
+      while (tile && tile.parentElement && tile.parentElement !== masonry && tile.parentElement.parentElement !== masonry) {
+        tile = tile.parentElement;
+      }
+      if (tile && tile !== masonry && !containsEditableComposer(tile)) {
+        const anchors = tile.getElementsByTagName('a');
+        for (const a of anchors) {
+          if (a.closest('.flx-toolbar, .flx-profile-bar, p, blockquote, form')) continue;
+          if (parseUserHref(a.getAttribute('href'))) {
+            return a === link ? tile : null;
+          }
+        }
+      }
+    }
+
     let el = link.parentElement;
     let bestSingleCard = null;
     let depth = 0;
 
     while (el && el !== root && el !== document.body && depth < 7) {
-      if (containsEditableComposer(el)) {
-        break;
-      }
-
+      if (containsEditableComposer(el)) break;
       if (el.dataset && el.dataset.flxUser) {
         return el.dataset.flxLinkHref === link.getAttribute('href') ? el : null;
       }
@@ -1497,16 +1977,11 @@
 
       if (effectiveUsers === 1) {
         const textLen = (el.textContent || '').trim().length;
-        if (textLen > 1 && el.tagName !== 'A') {
-          bestSingleCard = el;
-        }
+        if (textLen > 1 && el.tagName !== 'A') bestSingleCard = el;
       } else if (effectiveUsers > 1) {
         if (bestSingleCard) return bestSingleCard;
-
         const isTopLevelList = el.parentElement === root || el.children.length > 8;
-        if (!isTopLevelList && firstUserAnchor === link) {
-          return el;
-        }
+        if (!isTopLevelList && firstUserAnchor === link) return el;
         break;
       }
 
@@ -1518,7 +1993,7 @@
   }
 
   // =========================================================================
-  // 5. PROFILE, ABOUT (WITH NEWLINES), MAIN-PROFILE LIMITS & FETISH PARSER
+  // 6. PROFILE, ABOUT (WITH NEWLINES), ATOMIC LIMITS & FETISH PARSER
   // =========================================================================
   function cleanSectionText(raw) {
     return (raw || '')
@@ -1567,41 +2042,32 @@
     const results = [];
     const seen = new Set();
 
-    const STOP_PHRASES = /^(none|n\/a|na|ask|ask me|open|flexible|tbd|nothing|not much|discuss|discussed|negotiable|depends|too many to list)$/i;
-
     const addCandidate = (rawItem) => {
-      const cleaned = (rawItem || '')
-        .replace(/^[-•*▪▫‣⁃–—>\s]+/, '')
-        .replace(/^(and|or|also|plus|strictly|absolutely|definitely|no)\s+/i, '')
-        .replace(/[.!;:,]+$/, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-
-      if (!cleaned || cleaned.length < 2 || cleaned.length > 52) return;
-      if (STOP_PHRASES.test(cleaned)) return;
-      if (/^(into|curious|likes?|yes|loves?|favou?rites?|about me|looking for)$/i.test(cleaned)) return;
-
-      const lower = cleaned.toLowerCase();
-      if (!seen.has(lower)) {
-        seen.add(lower);
-        results.push(cleaned);
+      const valid = sanitizeTwoWordTerm(rawItem);
+      if (!valid) return;
+      const key = normalizeTermKey(valid);
+      if (!seen.has(key)) {
+        seen.add(key);
+        results.push(valid);
       }
     };
 
     const splitAndAddClause = (clause) => {
       if (!clause) return;
-      const firstSentence = clause.split(/\.\s+/)[0] || clause;
-      const tokens = firstSentence.split(/,|;|\/|\||•|\band\b|\bor\b|\bnor\b/i);
-      for (const tok of tokens) {
-        addCandidate(tok);
-      }
+      const stripped = clause
+        .replace(/\([^)]*\)/g, ' ')
+        .replace(/["“”][^"“”]*["“”]/g, ' ')
+        .split(/[.;—–]/)[0] || '';
+
+      const tokens = stripped.split(/,|\/|\||•|\band\b|\bor\b|\bnor\b/i);
+      for (const tok of tokens) addCandidate(tok);
     };
 
     const lines = source.split(/\n+/).map(l => l.trim()).filter(Boolean);
 
-    const INLINE_LABEL_RE = /^(?:my\s+)?(?:hard\s+and\s+soft\s+limits?|hard\s+limits?|soft\s+limits?|limits?|hard\s+nos?|hard\s+passes|not\s+into|things?\s+i['’]?m\s+not\s+into|deal\s*breakers?|turn\s*offs?|will\s+not\s+do|won['’]?t\s+do|off\s+the\s+table)\s*(?:include|are|:|-|–|—)\s*(.+)$/i;
-    const STANDALONE_HEADING_RE = /^(?:my\s+)?(?:hard\s+and\s+soft\s+limits?|hard\s+limits?|soft\s+limits?|limits?|hard\s+nos?|hard\s+passes|not\s+into|deal\s*breakers?|turn\s*offs?)\s*:?$/i;
-    const NEXT_SECTION_HEADING_RE = /^(?:about(?:\s+me)?|into|curious|likes?|loves?|favou?rites?|yes(?:es)?|looking\s+for|seeking|turn\s*ons?|kinks?|fetishes|fantasies|bio|summary|rules|expectations|message\s+me)\b/i;
+    const INLINE_LABEL_RE = /^(?:my\s+)?(?:hard\s+and\s+soft\s+limits?|hard\s+limits?|soft\s+limits?|limits?|hard\s+nos?|hard\s+passes|not\s+into|things?\s+i['’]?m\s+not\s+into|deal\s*breakers?|turn\s*offs?|will\s+not\s+do|won['’]?t\s+do|off\s+the\s+table)(?:\s*(?:\([^)]{1,48}\)|&[^:–—-]{1,32}))?\s*(?:include|are|:|-|–|—)\s*(.+)$/i;
+    const STANDALONE_HEADING_RE = /^(?:my\s+)?(?:hard\s+and\s+soft\s+limits?|hard\s+limits?|soft\s+limits?|limits?|hard\s+nos?|hard\s+passes|not\s+into|deal\s*breakers?|turn\s*offs?)(?:\s*(?:\([^)]{1,48}\)|&[^:]{1,32}))?\s*:?$/i;
+    const NEXT_SECTION_HEADING_RE = /^(?:about(?:\s+me)?|into|curious|likes?|loves?|favou?rites?|yes(?:es)?|looking\s+for|seeking|turn\s*ons?|kinks?|fetishes|fantasies|bio|summary|rules|expectations|message\s+me|connecting|in\s+the\s+bedroom|sti\s+status)\b/i;
 
     let inLimitListBlock = false;
     let listLinesCaptured = 0;
@@ -1623,14 +2089,29 @@
       if (inLimitListBlock) {
         if (
           NEXT_SECTION_HEADING_RE.test(line) ||
-          (line.endsWith(':') && line.length < 32) ||
-          listLinesCaptured >= 10
+          (line.endsWith(':') && line.length < 36) ||
+          listLinesCaptured >= 12
         ) {
           inLimitListBlock = false;
           continue;
         }
 
-        const isBulletOrShortItem = /^[-•*▪▫‣⁃–—>]/.test(line) || line.length <= 75;
+        const colonIdx = line.indexOf(':');
+        if (colonIdx > 2 && colonIdx < 40) {
+          const leftLabel = line.slice(0, colonIdx).trim();
+          const rightItems = line.slice(colonIdx + 1).trim();
+          addCandidate(leftLabel);
+
+          const semiParts = rightItems.split(';');
+          splitAndAddClause(semiParts[0]);
+          for (let i = 1; i < semiParts.length; i++) {
+            if (/\b(?:no|zero)\b/i.test(semiParts[i])) splitAndAddClause(semiParts[i]);
+          }
+          listLinesCaptured++;
+          continue;
+        }
+
+        const isBulletOrShortItem = /^[-•*▪▫‧‒>]/.test(line) || line.length <= 85;
         if (isBulletOrShortItem) {
           splitAndAddClause(line);
           listLinesCaptured++;
@@ -1640,19 +2121,39 @@
       }
     }
 
-    const PROSE_PATTERNS = [
-      /\b(?:hard\s+limits?|soft\s+limits?|my\s+limits?|deal\s*breakers?)\s+(?:are|include|consist\s+of)\s+([^.!?\n]{3,140})/gi,
-      /\b(?:not\s+into|hard\s+pass\s+on|strictly\s+no|absolutely\s+no)\s+([^.!?\n]{3,110})/gi
-    ];
-
-    for (const re of PROSE_PATTERNS) {
-      let m;
-      while ((m = re.exec(source)) !== null) {
-        splitAndAddClause(m[1]);
-      }
-    }
-
     return results.slice(0, 40);
+  }
+
+  function stripLimitsFromProseForExcludeScan(aboutText) {
+    if (!aboutText) return '';
+    const INLINE_LABEL_RE = /^(?:my\s+)?(?:hard\s+and\s+soft\s+limits?|hard\s+limits?|soft\s+limits?|limits?|hard\s+nos?|hard\s+passes|not\s+into|things?\s+i['’]?m\s+not\s+into|deal\s*breakers?|turn\s*offs?|will\s+not\s+do|won['’]?t\s+do|off\s+the\s+table)(?:\s*(?:\([^)]{1,48}\)|&[^:–—-]{1,32}))?\s*(?:include|are|:|-|–|—)/i;
+    const STANDALONE_HEADING_RE = /^(?:my\s+)?(?:hard\s+and\s+soft\s+limits?|hard\s+limits?|soft\s+limits?|limits?|hard\s+nos?|hard\s+passes|not\s+into|deal\s*breakers?|turn\s*offs?)(?:\s*(?:\([^)]{1,48}\)|&[^:]{1,32}))?\s*:?$/i;
+    const NEXT_SECTION_HEADING_RE = /^(?:about(?:\s+me)?|into|curious|likes?|loves?|favou?rites?|yes(?:es)?|looking\s+for|seeking|turn\s*ons?|kinks?|fetishes|fantasies|bio|summary|rules|expectations|message\s+me|connecting|in\s+the\s+bedroom|sti\s+status)\b/i;
+
+    const kept = [];
+    let inLimitBlock = false;
+    for (const rawLine of aboutText.split(/\n+/)) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      if (INLINE_LABEL_RE.test(line)) {
+        inLimitBlock = false;
+        continue;
+      }
+      if (STANDALONE_HEADING_RE.test(line)) {
+        inLimitBlock = true;
+        continue;
+      }
+      if (inLimitBlock) {
+        if (NEXT_SECTION_HEADING_RE.test(line) || (line.endsWith(':') && line.length < 36)) {
+          inLimitBlock = false;
+        } else {
+          continue;
+        }
+      }
+      const scrubbed = line.replace(/\b(?:no|not\s+into|hard\s+pass\s+on|strictly\s+no|absolutely\s+no)\s+[^.!?\n]{2,90}/gi, '');
+      kept.push(scrubbed);
+    }
+    return kept.join(' ');
   }
 
   function parseFetishesContainer(rootEl) {
@@ -1661,9 +2162,7 @@
     if (!rootEl) return { fetishesInto: into, fetishesLimits: limits, fetishesText: '' };
 
     const rawText = (rootEl.textContent || '').replace(/\s+/g, ' ').trim();
-    if (!rawText || rawText.length < 4) {
-      return { fetishesInto: into, fetishesLimits: limits, fetishesText: '' };
-    }
+    if (!rawText || rawText.length < 4) return { fetishesInto: into, fetishesLimits: limits, fetishesText: '' };
 
     const anchors = rootEl.getElementsByTagName('a');
     for (const a of anchors) {
@@ -1676,11 +2175,7 @@
       }
     }
 
-    return {
-      fetishesInto: into,
-      fetishesLimits: limits,
-      fetishesText: rawText
-    };
+    return { fetishesInto: into, fetishesLimits: limits, fetishesText: rawText };
   }
 
   function sanitizeProfileClone(rootEl, stripFetishesFrame = false) {
@@ -1705,6 +2200,7 @@
         (stripFetishesFrame && id === 'profile-fetishes') ||
         cls.includes('flx-toolbar') ||
         cls.includes('flx-profile-bar') ||
+        cls.includes('flx-chat-context') ||
         (node.dataset && (node.dataset.testId === 'profile-header-cover-actions' || 'popoverTemplate' in node.dataset))
       ) {
         toRemove.push(node);
@@ -1718,22 +2214,10 @@
     const scope = document.getElementById('main-content') || document.body;
     if (!scope) {
       return {
-        nonFetishFullText: '',
-        aboutText: '',
-        hasAbout: null,
-        fetishesText: '',
-        fetishesInto: [],
-        fetishesLimits: [],
-        writingsText: '',
-        headerText: '',
-        age: null,
-        gender: null,
-        genderCategory: null,
-        genderRole: null,
-        location: null,
-        relationships: null,
-        lookingFor: null,
-        groups: []
+        nonFetishFullText: '', aboutText: '', hasAbout: null, fetishesText: '',
+        fetishesInto: [], fetishesLimits: [], writingsText: '', headerText: '',
+        age: null, gender: null, genderCategory: null, genderRole: null,
+        location: null, relationships: null, orientation: null, lookingFor: null, groups: []
       };
     }
 
@@ -1793,7 +2277,7 @@
     let writingsText = '';
     if (activeView === 'posts' || activeView === 'writings' || activeView === 'l' || activeView === 'lists') {
       const wClone = sanitizeProfileClone(scope, true);
-      writingsText = (wClone.textContent || '').replace(/\s+/g, ' ').trim();
+      writingsText = extractCopyBlockTextWithLines(wClone);
     }
 
     const cleanScope = sanitizeProfileClone(scope, true);
@@ -1801,10 +2285,7 @@
 
     const limitSourceFallback = (activeView === 'about' && !aboutText) ? nonFetishFullText : '';
     const extractedProfileLimits = extractLimitsFromProfileText(aboutText, limitSourceFallback);
-    const combinedLimits = Array.from(new Set([
-      ...parsedFetishes.fetishesLimits,
-      ...extractedProfileLimits
-    ]));
+    const combinedLimits = Array.from(new Set([...parsedFetishes.fetishesLimits, ...extractedProfileLimits]));
 
     return {
       nonFetishFullText: cleanSectionText(nonFetishFullText),
@@ -1821,33 +2302,39 @@
       genderRole: demos.genderRole,
       location: demos.location,
       relationships: demos.relationships,
+      orientation: demos.orientation,
       lookingFor: demos.lookingFor,
       groups
     };
   }
 
   // =========================================================================
-  // 6. RULE MATCHING, LIMIT CONFLICTS & DEMOGRAPHIC FILTERING
+  // 7. RULE MATCHING, LIMIT CONFLICTS & DEMOGRAPHIC / LOCATION / REL FILTERING
   // =========================================================================
-  function getFetishIntoSearchText(cachedBio) {
-    if (!cachedBio) return '';
-    if (Array.isArray(cachedBio.fetishesInto) && cachedBio.fetishesInto.length > 0) {
-      return cachedBio.fetishesInto.join(' | ');
+  function getExcludeSearchText(cachedBio, cardText = '') {
+    const parts = [];
+    if (cardText) parts.push(cardText);
+    if (cachedBio) {
+      if (Array.isArray(cachedBio.fetishesInto) && cachedBio.fetishesInto.length > 0) {
+        parts.push(cachedBio.fetishesInto.join(' | '));
+      } else if (cachedBio.sections && typeof cachedBio.sections.fetishesInto === 'string') {
+        parts.push(cachedBio.sections.fetishesInto);
+      }
+      if (cachedBio.headerText) parts.push(cachedBio.headerText);
+      if (cachedBio.aboutText) parts.push(stripLimitsFromProseForExcludeScan(cachedBio.aboutText));
     }
-    if (cachedBio.sections && typeof cachedBio.sections.fetishesInto === 'string' && cachedBio.sections.fetishesInto.trim()) {
-      return cachedBio.sections.fetishesInto;
-    }
-    return '';
+    return parts.join(' \n ');
   }
 
   function findSimpleMatches(text, keywords) {
+    if (!keywords || keywords.length === 0) return [];
     const lower = (text || '').toLowerCase();
     const seen = new Set();
     const hits = [];
     for (const kw of keywords) {
       if (!kw) continue;
-      const norm = kw.toLowerCase();
-      if (!seen.has(norm) && lower.includes(norm)) {
+      const norm = normalizeTermKey(kw);
+      if (norm && !seen.has(norm) && lower.includes(kw.toLowerCase())) {
         seen.add(norm);
         hits.push(kw);
       }
@@ -1856,6 +2343,7 @@
   }
 
   function findRuleMatches(cardText, cachedPositiveText, rules) {
+    if (!rules || rules.length === 0) return [];
     const lowerCard = (cardText || '').toLowerCase();
     const lowerBio = (cachedPositiveText || '').toLowerCase();
     const hits = [];
@@ -1894,7 +2382,7 @@
         hits.push({
           id: rule.id || rule.label,
           label: rule.label || 'Match',
-          color: rule.color || '#38bdf8',
+          color: rule.color || PALETTE.ui.accent,
           keyword: matchedKw,
           fromCache
         });
@@ -1904,7 +2392,7 @@
   }
 
   function findLimitConflicts(limitsList, rules) {
-    if (!Array.isArray(limitsList) || limitsList.length === 0) return [];
+    if (!Array.isArray(limitsList) || limitsList.length === 0 || !rules || rules.length === 0) return [];
     const lowerLimits = limitsList.join(' | ').toLowerCase();
     const conflicts = [];
     const seenTypes = new Set();
@@ -1915,13 +2403,10 @@
       if (typeKey && seenTypes.has(typeKey)) continue;
 
       for (const kw of rule.keywords) {
-        if (!kw || kw.length < 3) continue;
+        if (!kw || kw.length < 2) continue;
         if (lowerLimits.includes(kw.toLowerCase())) {
           if (typeKey) seenTypes.add(typeKey);
-          conflicts.push({
-            label: rule.label || 'Limit',
-            keyword: kw
-          });
+          conflicts.push({ label: rule.label || 'Limit', keyword: kw });
           break;
         }
       }
@@ -1939,20 +2424,31 @@
   }
 
   function isGenderRejected(genderCategory, settings) {
-    const target = settings.genderFilter || 'all';
-    if (target === 'all') return false;
-    if (!genderCategory) return false;
-    return genderCategory !== target;
+    return !isGenderAllowedBySettings(genderCategory, settings);
   }
 
-  function isLocalPdx(entryOrDemos) {
-    const loc = (entryOrDemos.location || '').toLowerCase();
-    const txt = (entryOrDemos.fullText || '').toLowerCase();
-    return LOCAL_PDX_TERMS.some(term => loc.includes(term) || txt.includes(term));
+  function isNonLocalRejected(location, settings, isExploreTile = false) {
+    if (!settings.localOnlyFilter) return false;
+    const cleanLoc = (location || '').trim();
+    if (cleanLoc) {
+      return !isLocationLocal(cleanLoc, settings);
+    }
+    if (isExploreTile && settings.allowUnknownLocationOnExplore) {
+      return false;
+    }
+    return false;
+  }
+
+  function isRelationshipRejected(relationships, settings) {
+    const target = settings.relationshipFilter || 'all';
+    if (target === 'all') return false;
+    const relClass = classifyRelationshipStatus(relationships);
+    if (!relClass) return false;
+    return relClass !== target;
   }
 
   // =========================================================================
-  // 7. SHARED UI COMPONENTS & OVERLAY ENGINE
+  // 8. SHARED UI COMPONENTS & OVERLAY ENGINE
   // =========================================================================
   function createMatchDotsCluster(ruleHits, limitConflicts = [], excludedHits = []) {
     if (!ruleHits || ruleHits.length === 0) return null;
@@ -1960,12 +2456,8 @@
     wrap.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:2px 6px;border-radius:999px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);';
 
     const tooltipLines = ruleHits.map(h => `${h.label}: ${h.keyword}`);
-    if (limitConflicts.length > 0) {
-      tooltipLines.push(`⚠ Limits (from profile): ${limitConflicts.map(c => c.keyword).join(', ')}`);
-    }
-    if (excludedHits.length > 0) {
-      tooltipLines.push(`Red kinks (Fetishes): -${excludedHits.join(', -')}`);
-    }
+    if (limitConflicts.length > 0) tooltipLines.push(`⚠ Limits: ${limitConflicts.map(c => c.keyword).join(', ')}`);
+    if (excludedHits.length > 0) tooltipLines.push(`Excludes: -${excludedHits.join(', -')}`);
     wrap.title = tooltipLines.join(' • ');
 
     for (const hit of ruleHits) {
@@ -1999,14 +2491,14 @@
     const pill = document.createElement('span');
     if (isManualGender) {
       if (genderCategory === 'male') {
-        pill.style.cssText = 'font-size:11px;color:#93c5fd;background:rgba(59,130,246,0.16);border:1px solid rgba(59,130,246,0.38);padding:1px 6px;border-radius:4px;font-weight:500;';
+        pill.style.cssText = `font-size:11px;color:${PALETTE.ui.accent};background:rgba(122, 163, 184, 0.16);border:1px solid rgba(122, 163, 184, 0.38);padding:1px 6px;border-radius:4px;font-weight:500;`;
       } else if (genderCategory === 'other') {
-        pill.style.cssText = 'font-size:11px;color:#d8b4fe;background:rgba(168,85,247,0.16);border:1px solid rgba(168,85,247,0.38);padding:1px 6px;border-radius:4px;font-weight:500;';
+        pill.style.cssText = `font-size:11px;color:${PALETTE.ui.cool};background:rgba(138, 184, 150, 0.16);border:1px solid rgba(138, 184, 150, 0.38);padding:1px 6px;border-radius:4px;font-weight:500;`;
       } else {
-        pill.style.cssText = 'font-size:11px;color:#f9a8d4;background:rgba(244,114,182,0.14);border:1px solid rgba(244,114,182,0.35);padding:1px 6px;border-radius:4px;font-weight:500;';
+        pill.style.cssText = `font-size:11px;color:${PALETTE.ui.warm};background:rgba(212, 168, 67, 0.14);border:1px solid rgba(212, 168, 67, 0.35);padding:1px 6px;border-radius:4px;font-weight:500;`;
       }
     } else {
-      pill.style.cssText = 'font-size:11px;color:#cbd5e1;background:rgba(148,163,184,0.12);border:1px solid rgba(148,163,184,0.25);padding:1px 6px;border-radius:4px;font-weight:500;';
+      pill.style.cssText = `font-size:11px;color:${PALETTE.ui.text.secondary};background:rgba(148, 163, 184, 0.12);border:1px solid rgba(148, 163, 184, 0.25);padding:1px 6px;border-radius:4px;font-weight:500;`;
     }
     pill.textContent = summary;
     return pill;
@@ -2017,25 +2509,25 @@
     const mg = record.manualGender || '';
 
     if (mg === 'female') {
-      sel.style.cssText = 'background:rgba(244,114,182,0.18);color:#f9a8d4;border:1px solid #db2777;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;font-weight:600;';
+      sel.style.cssText = `background:rgba(212, 168, 67, 0.18);color:${PALETTE.ui.warm};border:1px solid #9a7b2e;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;font-weight:600;`;
     } else if (mg === 'male') {
-      sel.style.cssText = 'background:rgba(59,130,246,0.18);color:#93c5fd;border:1px solid #2563eb;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;font-weight:600;';
+      sel.style.cssText = `background:rgba(122, 163, 184, 0.18);color:${PALETTE.ui.accent};border:1px solid #4a6b7d;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;font-weight:600;`;
     } else if (mg === 'other') {
-      sel.style.cssText = 'background:rgba(168,85,247,0.18);color:#d8b4fe;border:1px solid #7e22ce;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;font-weight:600;';
+      sel.style.cssText = `background:rgba(138, 184, 150, 0.18);color:${PALETTE.ui.cool};border:1px solid #5a7d62;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;font-weight:600;`;
     } else {
-      sel.style.cssText = 'background:#202024;color:#a1a1aa;border:1px solid #3f3f46;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;';
+      sel.style.cssText = `background:#202024;color:${PALETTE.ui.text.muted};border:1px solid #3f3f46;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;`;
     }
 
-    sel.title = 'Override Gender (for profiles that do not state gender)';
+    sel.title = 'Override Gender';
 
     const cat = autoGenderObj?.genderCategory;
-    const autoHint = cat === 'female' ? '♀' : (cat === 'male' ? '♂' : (cat === 'other' ? '⚧' : '?'));
+    const autoHint = cat === 'female' ? '♀' : (cat === 'male' ? '♂' : (cat === 'other' ? ' transgender' : '?'));
 
     const opts = [
-      { val: '',       text: compact ? `G:${autoHint}` : `Gender: Auto (${autoHint})`, color: '#e4e4e7' },
-      { val: 'female', text: compact ? '♀ F' : '♀ Female',                             color: '#f9a8d4' },
-      { val: 'male',   text: compact ? '♂ M' : '♂ Male',                               color: '#93c5fd' },
-      { val: 'other',  text: compact ? '⚧ Oth' : '⚧ Other',                            color: '#d8b4fe' }
+      { val: '',       text: compact ? `G:${autoHint}` : `Gender: Auto (${autoHint})`, color: PALETTE.ui.text.primary },
+      { val: 'female', text: compact ? '♀ F' : '♀ Female',                             color: PALETTE.ui.warm },
+      { val: 'male',   text: compact ? '♂ M' : '♂ Male',                               color: PALETTE.ui.accent },
+      { val: 'other',  text: compact ? ' transgender Oth' : ' transgender Other',                            color: PALETTE.ui.cool }
     ];
 
     for (const o of opts) {
@@ -2048,10 +2540,7 @@
       sel.appendChild(optEl);
     }
 
-    sel.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-    });
+    sel.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); });
     sel.addEventListener('change', (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -2067,15 +2556,32 @@
       : el;
 
     el.style.opacity = '';
-    el.style.display = '';
+    el.style.height = '';
+    el.style.minHeight = '';
+    el.style.maxHeight = '';
+    el.style.overflow = '';
+    el.style.margin = '';
+    el.style.padding = '';
+    el.style.border = '';
+    el.style.pointerEvents = '';
+    el.style.visibility = '';
     targetBox.style.outline = '';
     targetBox.style.borderLeft = '';
     targetBox.style.backgroundColor = '';
     targetBox.style.boxShadow = '';
 
     if (isFilteredOut && !settings.showHidden) {
-      if (settings.hideMode === 'collapse') {
-        el.style.display = 'none';
+      if (settings.hideMode === 'remove') {
+        el.style.height = '0px';
+        el.style.minHeight = '0px';
+        el.style.maxHeight = '0px';
+        el.style.overflow = 'hidden';
+        el.style.margin = '0px';
+        el.style.padding = '0px';
+        el.style.border = 'none';
+        el.style.opacity = '0';
+        el.style.visibility = 'hidden';
+        el.style.pointerEvents = 'none';
       } else {
         el.style.opacity = String(settings.dimOpacity);
       }
@@ -2094,9 +2600,7 @@
     const stageDef = status ? STAGE_MAP[status] : null;
     if (stageDef && status !== 'hidden') {
       targetBox.style.borderLeft = `4px solid ${stageDef.color}`;
-      if (ruleHits.length === 0) {
-        targetBox.style.outline = `1px solid ${stageDef.border}`;
-      }
+      if (ruleHits.length === 0) targetBox.style.outline = `1px solid ${stageDef.border}`;
     }
   }
 
@@ -2109,7 +2613,7 @@
 
   function buildToolbar(userKey, settings, onUpdate, options = {}) {
     const {
-      viewMode = 'full',      // 'full' | 'compact' | 'minimal'
+      viewMode = 'full',
       isProfileBar = false,
       displayHandle = null,
       demos = null,
@@ -2125,22 +2629,13 @@
     const bar = document.createElement('div');
     bar.className = 'flx-toolbar';
 
-    if (isProfileBar) {
-      bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin:0;flex:1 1 auto;background:transparent;border:none;padding:0;font-family:system-ui,-apple-system,sans-serif;';
-    } else if (isInlineRow) {
-      bar.style.cssText = 'display:inline-flex;flex-wrap:nowrap;align-items:center;gap:4px;margin-left:auto;padding:1px 6px;flex:0 0 auto;background:rgba(20,20,25,0.88);border:1px solid #2e2e38;border-radius:5px;font-family:system-ui,-apple-system,sans-serif;z-index:5;';
-    } else if (isMinimal) {
-      bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin:2px 0 6px 0;padding:2px 6px;width:100%;box-sizing:border-box;background:rgba(20,20,25,0.82);border:1px solid rgba(63,63,70,0.6);border-radius:5px;font-family:system-ui,-apple-system,sans-serif;';
-    } else if (isCompact) {
-      bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin:2px 0 6px 0;padding:3px 7px;width:100%;box-sizing:border-box;background:rgba(22,22,27,0.88);border:1px solid #2e2e38;border-radius:6px;font-family:system-ui,-apple-system,sans-serif;';
-    } else {
-      bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin:2px 0 8px 0;padding:4px 8px;width:100%;box-sizing:border-box;background:rgba(20,20,25,0.92);border:1px solid #2e2e38;border-radius:6px;font-family:system-ui,-apple-system,sans-serif;';
-    }
+    if (isProfileBar) bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin:0;flex:1 1 auto;background:transparent;border:none;padding:0;font-family:system-ui,-apple-system,sans-serif;';
+    else if (isInlineRow) bar.style.cssText = 'display:inline-flex;flex-wrap:nowrap;align-items:center;gap:4px;margin-left:auto;padding:1px 6px;flex:0 0 auto;background:rgba(20,20,25,0.88);border:1px solid #2e2e38;border-radius:5px;font-family:system-ui,-apple-system,sans-serif;z-index:5;';
+    else if (isMinimal) bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin:2px 0 6px 0;padding:2px 6px;width:100%;box-sizing:border-box;background:rgba(20,20,25,0.82);border:1px solid rgba(63,63,70,0.6);border-radius:5px;font-family:system-ui,-apple-system,sans-serif;';
+    else if (isCompact) bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin:2px 0 6px 0;padding:3px 7px;width:100%;box-sizing:border-box;background:rgba(22,22,27,0.88);border:1px solid #2e2e38;border-radius:6px;font-family:system-ui,-apple-system,sans-serif;';
+    else bar.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin:2px 0 8px 0;padding:4px 8px;width:100%;box-sizing:border-box;background:rgba(20,20,25,0.92);border:1px solid #2e2e38;border-radius:6px;font-family:system-ui,-apple-system,sans-serif;';
 
-    const stopNav = (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-    };
+    const stopNav = (e) => { e.preventDefault(); e.stopPropagation(); };
 
     const persistMeta = (patch) => {
       const cur = Store.getUser(userKey);
@@ -2161,51 +2656,41 @@
     };
 
     const baseBtnStyle = isMinimal
-      ? 'background:#202024;color:#d4d4d8;border:1px solid #3f3f46;border-radius:4px;padding:1px 5px;cursor:pointer;font-size:10px;line-height:1.35;transition:background 0.15s,border-color 0.15s;'
-      : 'background:#202024;color:#d4d4d8;border:1px solid #3f3f46;border-radius:5px;padding:1px 6px;cursor:pointer;font-size:11px;line-height:1.4;transition:background 0.15s,border-color 0.15s;';
+      ? `background:#202024;color:${PALETTE.ui.text.secondary};border:1px solid #3f3f46;border-radius:4px;padding:1px 5px;cursor:pointer;font-size:10px;line-height:1.35;`
+      : `background:#202024;color:${PALETTE.ui.text.secondary};border:1px solid #3f3f46;border-radius:5px;padding:1px 6px;cursor:pointer;font-size:11px;line-height:1.4;`;
 
     if (!isProfileBar && !isInlineRow && typeof onToggleCardView === 'function') {
       const viewToggleBtn = document.createElement('button');
       viewToggleBtn.type = 'button';
       viewToggleBtn.style.cssText = isMinimal
-        ? `${baseBtnStyle}background:rgba(56,189,248,0.14);border-color:#0284c7;color:#7dd3fc;font-weight:700;`
-        : `${baseBtnStyle}color:#9ca3af;`;
+        ? `${baseBtnStyle}background:rgba(122, 163, 184, 0.14);border-color:#4a6b7d;color:${PALETTE.ui.accent};font-weight:700;`
+        : `${baseBtnStyle}color:${PALETTE.ui.text.muted};`;
       viewToggleBtn.textContent = isMinimal ? '▸' : '▾';
-      viewToggleBtn.title = isMinimal
-        ? 'Expand overlay to Full view (M)'
-        : 'Condense overlay to Minimal strip (M)';
-      viewToggleBtn.addEventListener('click', (e) => {
-        stopNav(e);
-        onToggleCardView();
-      });
+      viewToggleBtn.title = isMinimal ? 'Expand overlay to Full view (M)' : 'Condense overlay to Minimal strip (M)';
+      viewToggleBtn.addEventListener('click', (e) => { stopNav(e); onToggleCardView(); });
       bar.appendChild(viewToggleBtn);
     }
 
     const isStarred = record.status === 'shortlist';
     const starBtn = document.createElement('button');
     starBtn.type = 'button';
-    starBtn.style.cssText = isStarred
-      ? `${baseBtnStyle}background:rgba(251,191,36,0.18);border-color:#d97706;color:#fde047;font-weight:600;`
-      : baseBtnStyle;
+    starBtn.style.cssText = isStarred ? `${baseBtnStyle}background:rgba(212, 168, 67, 0.18);border-color:#9a7b2e;color:${PALETTE.ui.warm};font-weight:600;` : baseBtnStyle;
     starBtn.textContent = compactControls ? (isStarred ? '★' : '☆') : (isStarred ? '★ Shortlisted' : '☆ Shortlist');
     starBtn.title = 'Toggle Shortlist';
-    starBtn.addEventListener('click', (e) => {
-      stopNav(e);
-      persistMeta({ status: isStarred ? null : 'shortlist' });
-    });
+    starBtn.addEventListener('click', (e) => { stopNav(e); persistMeta({ status: isStarred ? null : 'shortlist' }); });
 
     const stageSelect = document.createElement('select');
     const activeStage = record.status ? STAGE_MAP[record.status] : null;
     stageSelect.style.cssText = activeStage
       ? `background:${activeStage.bg};color:${activeStage.color};border:1px solid ${activeStage.border};border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;font-weight:600;`
-      : 'background:#202024;color:#a1a1aa;border:1px solid #3f3f46;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;';
+      : `background:#202024;color:${PALETTE.ui.text.muted};border:1px solid #3f3f46;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;`;
     stageSelect.title = 'Vetting Pipeline Stage';
 
     const noneOpt = document.createElement('option');
     noneOpt.value = '';
     noneOpt.textContent = compactControls ? 'Stage…' : 'Stage: None';
     noneOpt.style.background = '#18181b';
-    noneOpt.style.color = '#e4e4e7';
+    noneOpt.style.color = PALETTE.ui.text.primary;
     stageSelect.appendChild(noneOpt);
 
     for (const st of PIPELINE_STAGES) {
@@ -2219,10 +2704,7 @@
     }
 
     stageSelect.addEventListener('click', stopNav);
-    stageSelect.addEventListener('change', (e) => {
-      stopNav(e);
-      persistMeta({ status: e.target.value || null });
-    });
+    stageSelect.addEventListener('change', (e) => { stopNav(e); persistMeta({ status: e.target.value || null }); });
 
     const genderSelect = buildGenderSelect(
       record,
@@ -2236,8 +2718,8 @@
     ageBtn.type = 'button';
     const ageOut = isAgeOutOfRange(curAge, settings);
     ageBtn.style.cssText = ageOut
-      ? `${baseBtnStyle}background:rgba(239,68,68,0.16);border-color:#b91c1c;color:#fca5a5;font-weight:600;`
-      : (curAge !== null ? `${baseBtnStyle}color:#cbd5e1;` : `${baseBtnStyle}color:#71717a;`);
+      ? `${baseBtnStyle}background:rgba(201, 122, 107, 0.16);border-color:#8b4f44;color:${PALETTE.ui.warn};font-weight:600;`
+      : (curAge !== null ? `${baseBtnStyle}color:${PALETTE.ui.text.secondary};` : `${baseBtnStyle}color:${PALETTE.ui.text.muted};`);
     ageBtn.textContent = curAge !== null ? `${curAge}y` : 'Age?';
     ageBtn.title = 'Click to set or override age (18-99), or leave blank to reset to auto';
     ageBtn.addEventListener('click', (e) => {
@@ -2254,20 +2736,15 @@
     const isPassed = record.status === 'hidden';
     const passBtn = document.createElement('button');
     passBtn.type = 'button';
-    passBtn.style.cssText = isPassed
-      ? `${baseBtnStyle}background:rgba(248,113,113,0.18);border-color:#dc2626;color:#fca5a5;font-weight:600;`
-      : baseBtnStyle;
+    passBtn.style.cssText = isPassed ? `${baseBtnStyle}background:rgba(201, 122, 107, 0.18);border-color:#8b4f44;color:${PALETTE.ui.warn};font-weight:600;` : baseBtnStyle;
     passBtn.textContent = compactControls ? '✕' : (isPassed ? '✕ Passed' : '✕ Pass');
     passBtn.title = 'Pass / Hide Profile';
-    passBtn.addEventListener('click', (e) => {
-      stopNav(e);
-      persistMeta({ status: isPassed ? null : 'hidden' });
-    });
+    passBtn.addEventListener('click', (e) => { stopNav(e); persistMeta({ status: isPassed ? null : 'hidden' }); });
 
     const noteBtn = document.createElement('button');
     noteBtn.type = 'button';
     noteBtn.style.cssText = record.note
-      ? `${baseBtnStyle}background:rgba(212,175,55,0.15);border-color:#b45309;color:#fcd34d;`
+      ? `${baseBtnStyle}background:rgba(212, 168, 55, 0.15);border-color:#9a7b2e;color:${PALETTE.ui.note};`
       : baseBtnStyle;
     noteBtn.textContent = compactControls ? '✎' : (record.note ? '✎ Edit Note' : '✎ Note');
     noteBtn.title = record.note ? `Private Note: ${record.note}` : 'Edit Private Note';
@@ -2275,9 +2752,7 @@
       stopNav(e);
       const cur = Store.getUser(userKey);
       const nextNote = window.prompt(`Private note for ${displayHandle || userKey}:`, cur.note || '');
-      if (nextNote !== null) {
-        persistMeta({ note: nextNote.trim() });
-      }
+      if (nextNote !== null) persistMeta({ note: nextNote.trim() });
     });
 
     if (isMinimal) {
@@ -2287,14 +2762,26 @@
     }
 
     if (!isInlineRow && (isProfileBar || viewMode === 'full')) {
+      if (record.isFriend) {
+        const fBadge = document.createElement('span');
+        fBadge.style.cssText = `font-size:10px;color:${PALETTE.ui.friend};padding:1px 5px;background:rgba(138, 184, 150, 0.14);border:1px solid rgba(138, 184, 150, 0.35);border-radius:4px;font-weight:600;`;
+        fBadge.textContent = '★ Friend';
+        bar.appendChild(fBadge);
+      } else if (record.isFollowing) {
+        const folBadge = document.createElement('span');
+        folBadge.style.cssText = `font-size:10px;color:${PALETTE.ui.follow};padding:1px 5px;background:rgba(122, 163, 184, 0.12);border:1px solid rgba(122, 163, 184, 0.3);border-radius:4px;`;
+        folBadge.textContent = '✓ Following';
+        bar.appendChild(folBadge);
+      }
+
       if (record.lastContacted && record.status !== 'hidden') {
         const contacted = document.createElement('span');
-        contacted.style.cssText = 'font-size:10px;color:#7dd3fc;padding:1px 5px;background:rgba(56,189,248,0.1);border:1px solid rgba(56,189,248,0.28);border-radius:4px;';
+        contacted.style.cssText = `font-size:10px;color:${PALETTE.ui.follow};padding:1px 5px;background:rgba(122, 163, 184, 0.1);border:1px solid rgba(122, 163, 184, 0.28);border-radius:4px;`;
         contacted.textContent = `Contacted ${record.lastContacted}`;
         bar.appendChild(contacted);
       } else if (record.lastSeen && record.status !== 'hidden') {
         const seen = document.createElement('span');
-        seen.style.cssText = 'font-size:10px;color:#9ca3af;padding:1px 5px;border:1px solid #333;border-radius:4px;';
+        seen.style.cssText = `font-size:10px;color:${PALETTE.ui.text.muted};padding:1px 5px;border:1px solid #333;border-radius:4px;`;
         seen.textContent = `Viewed ${record.lastSeen}`;
         bar.appendChild(seen);
       }
@@ -2310,55 +2797,62 @@
     return bar;
   }
 
-  function appendMatchBadges(toolbar, cachedBio, demos, missingAbout, ageRejected, genderRejected, ruleHits, limitConflicts, excludedHits, viewMode) {
+  function appendMatchBadges(toolbar, cachedBio, demos, missingAbout, ageRejected, genderRejected, nonLocalRejected, relRejected, ruleHits, limitConflicts, excludedHits, viewMode) {
     const dotsCluster = createMatchDotsCluster(ruleHits, limitConflicts, excludedHits);
-    if (dotsCluster) {
-      toolbar.appendChild(dotsCluster);
-    }
+    if (dotsCluster) toolbar.appendChild(dotsCluster);
 
     if (viewMode !== 'full') return;
 
     const demoPill = createDemographicPill(demos?.age, demos?.gender, demos?.genderRole, demos?.location, demos?.isManualGender, demos?.genderCategory);
-    if (demoPill) {
-      toolbar.appendChild(demoPill);
-    }
+    if (demoPill) toolbar.appendChild(demoPill);
 
     if (demos?.relationships) {
       const relPill = document.createElement('span');
-      relPill.style.cssText = 'font-size:10px;color:#d8b4fe;background:rgba(168,85,247,0.12);border:1px solid rgba(168,85,247,0.28);padding:1px 5px;border-radius:4px;';
+      relPill.style.cssText = `font-size:10px;color:${PALETTE.ui.cool};background:rgba(138, 184, 150, 0.12);border:1px solid rgba(138, 184, 150, 0.28);padding:1px 5px;border-radius:4px;`;
       relPill.textContent = demos.relationships;
       toolbar.appendChild(relPill);
     }
 
     if (cachedBio) {
       const bioBadge = document.createElement('span');
-      bioBadge.style.cssText = 'font-size:10px;color:#9ca3af;padding:1px 5px;border:1px solid #333;border-radius:4px;';
+      bioBadge.style.cssText = `font-size:10px;color:${PALETTE.ui.text.muted};padding:1px 5px;border:1px solid #333;border-radius:4px;`;
       const hasFetishes = Boolean(cachedBio.fetishesInto && cachedBio.fetishesInto.length > 0);
       const limitCount = (cachedBio.fetishesLimits || []).length;
-      bioBadge.title = cachedBio.hasAbout
-        ? `Locally cached profile — About (${cachedBio.aboutText.length} chars)${hasFetishes ? ' + Fetishes' : ''}${limitCount ? ` + ${limitCount} Limits` : ''}`
-        : 'Locally cached profile — no About section';
       bioBadge.textContent = `${cachedBio.hasAbout ? 'About ✓' : 'No About'}${hasFetishes ? ' • Fetishes ✓' : ''}${limitCount ? ` • Limits (${limitCount})` : ''}`;
       toolbar.appendChild(bioBadge);
     }
 
     if (genderRejected) {
       const b = document.createElement('span');
-      b.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
-      b.textContent = `-Gender${demos?.gender ? ` (${demos.gender})` : ''}`;
+      b.style.cssText = `font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(201, 122, 107, 0.16);color:${PALETTE.ui.warn};border:1px solid #8b4f44;`;
+      b.textContent = `-Gender${demos?.gender ? ` (${demos.gender})` : ' (Unknown)'}`;
+      toolbar.appendChild(b);
+    }
+
+    if (nonLocalRejected) {
+      const b = document.createElement('span');
+      b.style.cssText = `font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(201, 122, 107, 0.16);color:${PALETTE.ui.warn};border:1px solid #8b4f44;`;
+      b.textContent = `-Non-Local${demos?.location ? ` (${demos.location})` : ''}`;
+      toolbar.appendChild(b);
+    }
+
+    if (relRejected) {
+      const b = document.createElement('span');
+      b.style.cssText = `font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(201, 122, 107, 0.16);color:${PALETTE.ui.warn};border:1px solid #8b4f44;`;
+      b.textContent = `-Rel${demos?.relationships ? ` (${demos.relationships})` : ''}`;
       toolbar.appendChild(b);
     }
 
     if (missingAbout) {
       const b = document.createElement('span');
-      b.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
+      b.style.cssText = `font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(201, 122, 107, 0.16);color:${PALETTE.ui.warn};border:1px solid #8b4f44;`;
       b.textContent = '-No About';
       toolbar.appendChild(b);
     }
 
     if (ageRejected) {
       const b = document.createElement('span');
-      b.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
+      b.style.cssText = `font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(201, 122, 107, 0.16);color:${PALETTE.ui.warn};border:1px solid #8b4f44;`;
       b.textContent = `-Age (${demos.age})`;
       toolbar.appendChild(b);
     }
@@ -2372,24 +2866,124 @@
 
     limitConflicts.forEach((conf) => {
       const badge = document.createElement('span');
-      badge.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(245,158,11,0.18);color:#fcd34d;border:1px solid #d97706;font-weight:500;';
-      badge.title = `Extracted from main profile Limits (${conf.label})`;
+      badge.style.cssText = `font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(201, 122, 107, 0.18);color:${PALETTE.ui.warn};border:1px solid #9a7b2e;font-weight:500;`;
       badge.textContent = `⚠ Limit: ${conf.keyword}`;
       toolbar.appendChild(badge);
     });
 
     excludedHits.forEach((kw) => {
       const badge = document.createElement('span');
-      badge.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
-      badge.title = 'Red kink found in Fetishes (Into) list';
+      badge.style.cssText = `font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(201, 122, 107, 0.16);color:${PALETTE.ui.warn};border:1px solid #8b4f44;`;
       badge.textContent = `-${kw}`;
       toolbar.appendChild(badge);
     });
   }
 
   // =========================================================================
-  // 8. KEYBOARD LIST NAVIGATOR & FLOATING TOAST
+  // 8. KEYBOARD LIST NAVIGATOR, THROTTLED BATCH OPENER & FLOATING TOAST
   // =========================================================================
+  const BatchOpener = {
+    timer: null,
+    remaining: [],
+
+    getUncachedCandidateCards() {
+      const settings = Store.getSettings();
+      const ttl = settings.bioCacheTtlDays;
+      const all = Array.from(document.getElementsByClassName('flx-card-tracked'));
+      const seenKeys = new Set();
+      const candidates = [];
+
+      for (const el of all) {
+        if (!el.isConnected || el.dataset.flxFilteredOut === '1') continue;
+        const userKey = el.dataset.flxUser;
+        if (!userKey || seenKeys.has(userKey)) continue;
+        if (Store.getCachedBio(userKey, ttl)) continue;
+
+        const gCat = el.dataset.flxGenderCat || null;
+        const loc = el.dataset.flxLocation || '';
+        const rel = el.dataset.flxRelationships || '';
+        const ageVal = normalizeValidAge(el.dataset.flxAge);
+        const rawTxt = el.dataset.flxRawItemText || '';
+
+        if (isGenderRejected(gCat, settings)) continue;
+        if (isNonLocalRejected(loc, settings, false)) continue;
+        if (isRelationshipRejected(rel, settings)) continue;
+        if (isAgeOutOfRange(ageVal, settings)) continue;
+
+        if (settings.batchRequireLocal && !isLocationLocal(loc, settings)) {
+          continue;
+        }
+
+        if (!isProfileEligibleForAutoCache({
+          genderCategory: gCat,
+          location: loc,
+          relationships: rel,
+          fullText: rawTxt
+        }, settings)) {
+          continue;
+        }
+
+        seenKeys.add(userKey);
+        candidates.push({
+          key: userKey,
+          handle: el.dataset.flxHandle || userKey,
+          url: el.dataset.flxProfileUrl || `${window.location.origin}/${el.dataset.flxHandle || userKey}`
+        });
+      }
+      return candidates;
+    },
+
+    isRunning() {
+      return this.timer !== null || this.remaining.length > 0;
+    },
+
+    cancel() {
+      if (this.timer) {
+        clearTimeout(this.timer);
+        this.timer = null;
+      }
+      this.remaining = [];
+      Hud.syncQuickButtons();
+    },
+
+    start(maxBatch = 5, intervalMs = 2500) {
+      if (this.isRunning()) {
+        this.cancel();
+        CardNavigator.showToast('Batch tab opener cancelled');
+        return;
+      }
+
+      const candidates = this.getUncachedCandidateCards().slice(0, maxBatch);
+      if (candidates.length === 0) {
+        CardNavigator.showToast('No visible uncached cards matching your rules');
+        return;
+      }
+
+      this.remaining = candidates;
+      const openNext = () => {
+        if (this.remaining.length === 0) {
+          this.timer = null;
+          Hud.syncQuickButtons();
+          CardNavigator.showToast('✓ Finished opening batch tabs');
+          return;
+        }
+        const item = this.remaining.shift();
+        openProfileInBackgroundTab(item.url);
+        Hud.syncQuickButtons();
+        CardNavigator.showToast(`Opened /${item.handle} in background tab (${this.remaining.length} left)…`);
+
+        if (this.remaining.length > 0) {
+          this.timer = setTimeout(openNext, intervalMs);
+        } else {
+          this.timer = null;
+          Hud.syncQuickButtons();
+        }
+      };
+
+      openNext();
+    }
+  };
+
   const CardNavigator = {
     activeIndex: -1,
     toastEl: null,
@@ -2397,7 +2991,7 @@
 
     getVisibleCards() {
       const all = Array.from(document.getElementsByClassName('flx-card-tracked'));
-      return all.filter(el => el.isConnected && el.offsetParent !== null && el.style.display !== 'none');
+      return all.filter(el => el.isConnected && el.dataset.flxFilteredOut !== '1');
     },
 
     clearFocusRing() {
@@ -2421,7 +3015,7 @@
       const target = cards[clamped];
       target.dataset.flxPrevShadow = target.style.boxShadow || '';
       target.classList.add('flx-kbd-focused');
-      target.style.boxShadow = '0 0 0 2px #eab308, 0 8px 24px rgba(0,0,0,0.65)';
+      target.style.boxShadow = '0 0 0 2px #d4a843, 0 8px 24px rgba(0,0,0,0.65)';
       target.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
       const handle = target.dataset.flxHandle || target.dataset.flxUser || 'profile';
@@ -2445,9 +3039,7 @@
     getFocusedCard() {
       const cards = this.getVisibleCards();
       if (cards.length === 0) return null;
-      if (this.activeIndex < 0 || this.activeIndex >= cards.length) {
-        return this.focusCard(0);
-      }
+      if (this.activeIndex < 0 || this.activeIndex >= cards.length) return this.focusCard(0);
       return cards[this.activeIndex];
     },
 
@@ -2484,13 +3076,11 @@
         Store.setUser(userKey, { username: handle, manualGender: nextManual });
         runAll();
         const remaining = this.getVisibleCards();
-        if (remaining.length > 0) {
-          this.focusCard(Math.min(this.activeIndex, remaining.length - 1));
-        }
+        if (remaining.length > 0) this.focusCard(Math.min(this.activeIndex, remaining.length - 1));
         const labels = {
           female: `♀ Set /${handle} as Female`,
           male: `♂ Set /${handle} as Male`,
-          other: `⚧ Set /${handle} as Other`
+          other: ` transgender Set /${handle} as Other`
         };
         this.showToast(labels[nextManual] || `Reset /${handle} gender to Auto`);
         return;
@@ -2512,12 +3102,10 @@
         Store.setUser(userKey, { username: handle, status: nextStatus });
         runAll();
         const remaining = this.getVisibleCards();
-        if (remaining.length > 0) {
-          this.focusCard(Math.min(this.activeIndex, remaining.length - 1));
-        }
+        if (remaining.length > 0) this.focusCard(Math.min(this.activeIndex, remaining.length - 1));
         this.showToast(nextStatus ? `✕ Passed /${handle}` : `Restored /${handle}`);
         return;
-      }
+     Yes — the previous message was cut off at `CardNavigator.actOnFocused`. Here's the rest:
 
       if (action === 'note') {
         const cur = Store.getUser(userKey);
@@ -2548,18 +3136,23 @@
   };
 
   // =========================================================================
-  // 9. PAGE ENHANCERS: CARDS/POSTS, SELF-PROFILE SYNC & STICKY PROFILE BAR
+  // 9. PAGE ENHANCERS: CARDS/POSTS, SELF-PROFILE LEARNER & LOCKED-DOWN CHAT STRIP
   // =========================================================================
   function getScopedCardText(container) {
+    if (container.dataset.flxRawItemText) {
+      return container.dataset.flxRawItemText;
+    }
     const clone = container.cloneNode(true);
     clone.querySelectorAll('.flx-toolbar').forEach(el => el.remove());
     if (container.tagName === 'ARTICLE') {
       clone.querySelectorAll('ul, ol, li').forEach(el => el.remove());
     }
-    return (clone.textContent || '').replace(/\s+/g, ' ').trim();
+    const txt = (clone.textContent || '').replace(/\s+/g, ' ').trim();
+    container.dataset.flxRawItemText = txt;
+    return txt;
   }
 
-  function applyContainerState(container, identity, settings, force = false) {
+  function applyContainerState(container, identity, settings, force = false, pageSocialContext = null) {
     if (containsEditableComposer(container)) return;
 
     const userKey = identity.key;
@@ -2569,16 +3162,51 @@
     const resolvedGender = resolveEffectiveGender(record, cachedBio, identity.demographics);
     const resolvedAge = resolveEffectiveAge(record, cachedBio, identity.demographics);
 
+    const itemText = getScopedCardText(container);
+    const isExploreTile = Boolean(container.closest('fl-masonry'));
+
+    const liveSocial = detectLiveSocialRelation(container);
+    const detectedFriend = Boolean(liveSocial.isFriend || pageSocialContext?.isFriendsList);
+    const detectedFollowing = Boolean(liveSocial.isFollowing || pageSocialContext?.isFollowingList);
+
     const liveDemos = identity.demographics || {};
+    const effectiveLocation = liveDemos.location || record.location || cachedBio?.location || null;
+    const effectiveRelationships = liveDemos.relationships || record.relationships || cachedBio?.relationships || null;
+
+    const hasManualWork = Boolean(
+      record.status ||
+      record.manualGender ||
+      record.manualAge ||
+      record.isFriend ||
+      record.isFollowing ||
+      detectedFriend ||
+      detectedFollowing ||
+      (record.note && record.note.trim().length > 0)
+    );
+    const canPersistRecord = hasManualWork || isProfileEligibleForAutoCache({
+      genderCategory: resolvedGender.genderCategory,
+      location: effectiveLocation || '',
+      relationships: effectiveRelationships || '',
+      fullText: `${itemText} ${bioText}`
+    }, settings);
+
     if (
-      (liveDemos.age && !record.manualAge && record.age !== liveDemos.age) ||
+      canPersistRecord &&
+      ((liveDemos.age && !record.manualAge && record.age !== liveDemos.age) ||
       (!record.manualGender && liveDemos.genderCategory && record.genderCategory !== liveDemos.genderCategory) ||
-      (liveDemos.genderRole && !record.genderRole)
+      (liveDemos.genderRole && !record.genderRole) ||
+      (liveDemos.location && !record.location) ||
+      (liveDemos.relationships && !record.relationships) ||
+      (detectedFriend && !record.isFriend) ||
+      (detectedFollowing && !record.isFollowing))
     ) {
       const patch = { username: identity.username || record.username || null };
       if (liveDemos.age && !record.manualAge) patch.age = liveDemos.age;
       if (liveDemos.genderRole) patch.genderRole = liveDemos.genderRole;
       if (liveDemos.location && !record.location) patch.location = liveDemos.location;
+      if (liveDemos.relationships && !record.relationships) patch.relationships = liveDemos.relationships;
+      if (detectedFriend) patch.isFriend = true;
+      if (detectedFollowing) patch.isFollowing = true;
       if (!record.manualGender && liveDemos.genderCategory) {
         patch.gender = liveDemos.gender;
         patch.genderCategory = liveDemos.genderCategory;
@@ -2598,30 +3226,35 @@
       genderCategory: resolvedGender.genderCategory,
       isManualGender: resolvedGender.isManual,
       autoDetected: resolvedGender.autoDetected,
-      genderRole: identity.demographics?.genderRole || record.genderRole || cachedBio?.genderRole || null,
-      location: identity.demographics?.location || record.location || cachedBio?.location || null,
-      relationships: identity.demographics?.relationships || record.relationships || cachedBio?.relationships || null,
-      lookingFor: identity.demographics?.lookingFor || record.lookingFor || cachedBio?.lookingFor || null
+      genderRole: liveDemos.genderRole || record.genderRole || cachedBio?.genderRole || null,
+      location: effectiveLocation,
+      relationships: effectiveRelationships,
+      lookingFor: liveDemos.lookingFor || record.lookingFor || cachedBio?.lookingFor || null
     };
 
-    const missingAbout = Boolean(settings.hideNoAbout && cachedBio && cachedBio.hasAbout === false);
-    const ageRejected = isAgeOutOfRange(mergedDemos.age, settings);
-    const genderRejected = isGenderRejected(mergedDemos.genderCategory, settings);
+    const isExempt = Boolean(
+      settings.exemptInteractedAndSocial &&
+      hasProtectedInteractionOrSocial(record, { isFriend: detectedFriend, isFollowing: detectedFollowing })
+    );
 
-    if (!container.dataset.flxRawItemText) {
-      container.dataset.flxRawItemText = getScopedCardText(container);
-    }
-    const itemText = container.dataset.flxRawItemText;
+    const missingAbout = Boolean(!isExempt && settings.hideNoAbout && cachedBio && cachedBio.hasAbout === false);
+    const ageRejected = !isExempt && isAgeOutOfRange(mergedDemos.age, settings);
+    const genderRejected = !isExempt && isGenderRejected(mergedDemos.genderCategory, settings);
+    const nonLocalRejected = !isExempt && isNonLocalRejected(mergedDemos.location, settings, isExploreTile);
+    const relRejected = !isExempt && isRelationshipRejected(mergedDemos.relationships, settings);
 
-    const fetishIntoText = getFetishIntoSearchText(cachedBio);
-    const excludedHits = findSimpleMatches(fetishIntoText, settings.excludeKeywords);
+    const excludeSourceText = getExcludeSearchText(cachedBio, itemText);
+    const excludedHits = isExempt ? [] : findSimpleMatches(excludeSourceText, settings.excludeKeywords);
     const ruleHits = findRuleMatches(itemText, bioText, settings.highlightRules);
     const limitConflicts = cachedBio ? findLimitConflicts(cachedBio.fetishesLimits, settings.highlightRules) : [];
 
     const sig = JSON.stringify({
       userKey,
       effectiveViewMode,
+      isExempt,
       status: record.status,
+      isFriend: record.isFriend,
+      isFollowing: record.isFollowing,
       manualGender: record.manualGender,
       manualAge: record.manualAge,
       note: record.note,
@@ -2631,8 +3264,14 @@
       bioFetchedAt: cachedBio ? cachedBio.fetchedAt : null,
       hasAbout: cachedBio ? cachedBio.hasAbout : null,
       showHidden: settings.showHidden,
+      exemptInteractedAndSocial: settings.exemptInteractedAndSocial,
       hideNoAbout: settings.hideNoAbout,
-      genderFilter: settings.genderFilter,
+      localOnlyFilter: settings.localOnlyFilter,
+      localRegions: settings.localRegions,
+      allowUnknownLocationOnExplore: settings.allowUnknownLocationOnExplore,
+      relationshipFilter: settings.relationshipFilter,
+      allowedGenders: settings.allowedGenders,
+      strictGenderHideUnknown: settings.strictGenderHideUnknown,
       filterByAge: settings.filterByAge,
       minAge: settings.minAge,
       maxAge: settings.maxAge,
@@ -2646,14 +3285,20 @@
 
     if (!force && container.dataset.flxSig === sig) return;
 
+    const isFilteredOut = record.status === 'hidden' || (!isExempt && (excludedHits.length > 0 || missingAbout || ageRejected || genderRejected || nonLocalRejected || relRejected));
+
     container.classList.add('flx-card-tracked');
     container.dataset.flxUser = userKey;
     container.dataset.flxHandle = identity.username || record.username || userKey;
     container.dataset.flxProfileUrl = identity.profileUrl;
     container.dataset.flxEffectiveView = effectiveViewMode;
+    container.dataset.flxAge = mergedDemos.age !== null ? String(mergedDemos.age) : '';
+    container.dataset.flxGenderCat = mergedDemos.genderCategory || '';
+    container.dataset.flxLocation = mergedDemos.location || '';
+    container.dataset.flxRelationships = mergedDemos.relationships || '';
+    container.dataset.flxFilteredOut = isFilteredOut ? '1' : '0';
     container.dataset.flxSig = sig;
 
-    const isFilteredOut = record.status === 'hidden' || excludedHits.length > 0 || missingAbout || ageRejected || genderRejected;
     applyCardAccentStyle(container, record.status, ruleHits, isFilteredOut, settings);
 
     for (const child of Array.from(container.children)) {
@@ -2669,7 +3314,7 @@
         userKey,
         settings,
         () => {
-          withObserverPaused(() => applyContainerState(container, identity, Store.getSettings(), true));
+          withObserverPaused(() => applyContainerState(container, identity, Store.getSettings(), true, pageSocialContext));
         },
         {
           viewMode: isInlineRow ? 'minimal' : effectiveViewMode,
@@ -2681,7 +3326,7 @@
           onToggleCardView: () => {
             const nextOverride = effectiveViewMode === 'minimal' ? 'full' : 'minimal';
             cardViewOverrides.set(userKey, nextOverride);
-            withObserverPaused(() => applyContainerState(container, identity, Store.getSettings(), true));
+            withObserverPaused(() => applyContainerState(container, identity, Store.getSettings(), true, pageSocialContext));
           }
         }
       );
@@ -2693,6 +3338,8 @@
         missingAbout,
         ageRejected,
         genderRejected,
+        nonLocalRejected,
+        relRejected,
         ruleHits,
         limitConflicts,
         excludedHits,
@@ -2704,7 +3351,6 @@
   }
 
   function enhancePostsAndCards() {
-    // Never inject profile-card toolbars onto individual message bubbles inside conversations/inbox
     const path = window.location.pathname;
     if (path.startsWith('/conversations') || path.startsWith('/inbox')) {
       return 0;
@@ -2716,13 +3362,19 @@
     const currentProfileKey = currentProfile ? currentProfile.key : null;
     const { selfId, selfUsername } = getSelfIdentity();
 
+    const isSelfPage = Boolean(currentProfile && isCurrentProfileSelf(currentProfile));
+    const pageSocialContext = {
+      isFriendsList: Boolean(isSelfPage && currentProfile.activeView === 'friends'),
+      isFollowingList: Boolean(isSelfPage && currentProfile.activeView === 'following')
+    };
+
     const links = root.getElementsByTagName('a');
     const seenContainers = new Set();
 
     for (const link of links) {
       if (link.closest('nav, footer, aside, form, dialog, #feed-status-form, #chat_dock, .flx-toolbar, .flx-profile-bar, .flx-chat-context')) continue;
       const closestHeader = link.closest('header');
-      if (closestHeader && !closestHeader.closest('article')) continue;
+      if (closestHeader && !closestHeader.closest('article') && !closestHeader.closest('fl-masonry')) continue;
 
       const parsed = parseUserHref(link.getAttribute('href'));
       if (!parsed || parsed.key === currentProfileKey) continue;
@@ -2737,7 +3389,7 @@
 
       seenContainers.add(container);
       container.dataset.flxLinkHref = link.getAttribute('href') || '';
-      applyContainerState(container, identity, settings, false);
+      applyContainerState(container, identity, settings, false, pageSocialContext);
     }
 
     return seenContainers.size;
@@ -2745,9 +3397,7 @@
 
   function findProfileBarAnchorBlock() {
     const profileNav = document.getElementById('profile-navigation');
-    if (profileNav) {
-      return profileNav.closest('header') || profileNav;
-    }
+    if (profileNav) return profileNav.closest('header') || profileNav;
     const profileHeader = findProfileHeaderElement();
     if (profileHeader) return profileHeader;
 
@@ -2774,22 +3424,10 @@
     } catch (err) {
       console.error('[FLX] extractProfileData error:', err);
       liveData = {
-        nonFetishFullText: '',
-        aboutText: '',
-        hasAbout: null,
-        fetishesText: '',
-        fetishesInto: [],
-        fetishesLimits: [],
-        writingsText: '',
-        headerText: '',
-        age: null,
-        gender: null,
-        genderCategory: null,
-        genderRole: null,
-        location: null,
-        relationships: null,
-        lookingFor: null,
-        groups: []
+        nonFetishFullText: '', aboutText: '', hasAbout: null, fetishesText: '',
+        fetishesInto: [], fetishesLimits: [], writingsText: '', headerText: '',
+        age: null, gender: null, genderCategory: null, genderRole: null,
+        location: null, relationships: null, orientation: null, lookingFor: null, groups: []
       };
     }
 
@@ -2805,6 +3443,9 @@
       const updatedSelf = Store.saveSelfProfile({
         key: currentKey,
         username: displayHandle,
+        genderCategory: liveData.genderCategory || prevSelf.genderCategory || null,
+        orientation: liveData.orientation || prevSelf.orientation || null,
+        location: liveData.location || prevSelf.location || null,
         fetishesInto: nextInto,
         fetishesLimits: nextLimits,
         groups: nextGroups,
@@ -2812,8 +3453,8 @@
       });
 
       const settings = Store.getSettings();
-      if (settings.autoSyncSelfKinks && (liveData.fetishesInto.length > 0 || liveData.fetishesLimits.length > 0)) {
-        Store.syncSelfKinksToRules(updatedSelf);
+      if (settings.autoLearnFromSelf && (liveData.fetishesInto.length > 0 || liveData.fetishesLimits.length > 0)) {
+        Store.learnPreferencesFromSelf(updatedSelf, false);
       }
 
       const selfSig = JSON.stringify({
@@ -2821,7 +3462,9 @@
         intoCount: updatedSelf.fetishesInto.length,
         limitsCount: updatedSelf.fetishesLimits.length,
         groupCount: updatedSelf.groups.length,
-        autoSync: settings.autoSyncSelfKinks
+        orientation: updatedSelf.orientation,
+        location: updatedSelf.location,
+        autoSync: settings.autoLearnFromSelf
       });
 
       const existingBars = document.getElementsByClassName('flx-profile-bar');
@@ -2840,71 +3483,117 @@
       selfBar.style.cssText = 'width:100%;max-width:1280px;margin:8px auto 0;padding:9px 14px;background:rgba(16,24,32,0.96);backdrop-filter:blur(10px);border:1px solid #0284c7;border-radius:8px;display:flex;flex-wrap:wrap;align-items:center;gap:10px;position:relative;z-index:90;box-sizing:border-box;font-family:system-ui,sans-serif;font-size:12px;color:#e4e4e7;';
 
       const badge = document.createElement('strong');
-      badge.style.color = '#7dd3fc';
+      badge.style.color = PALETTE.ui.accent;
       badge.textContent = `👤 Your Profile (/${displayHandle})`;
 
       const stats = document.createElement('span');
-      stats.style.color = '#cbd5e1';
-      stats.textContent = `Synced: ${updatedSelf.fetishesInto.length} Into kinks • ${updatedSelf.fetishesLimits.length} Profile Limits • ${updatedSelf.groups.length} Groups`;
+      stats.style.color = PALETTE.ui.text.secondary;
+      stats.textContent = `${updatedSelf.fetishesInto.length} Into kinks • ${updatedSelf.fetishesLimits.length} Atomic Limits • ${updatedSelf.groups.length} Groups`;
 
-      const syncBtn = document.createElement('button');
-      syncBtn.type = 'button';
-      syncBtn.style.cssText = 'background:rgba(56,189,248,0.18);color:#7dd3fc;border:1px solid #0284c7;border-radius:5px;padding:3px 9px;cursor:pointer;font-size:11px;font-weight:600;margin-left:auto;';
-      syncBtn.textContent = '↻ Sync My Kinks & Profile Limits to Filter';
-      syncBtn.title = 'Add your Into fetishes to the Shared Kink highlight category and your About-text Limits to Red Kink Excludes';
-      syncBtn.addEventListener('click', () => {
-        const res = Store.syncSelfKinksToRules(Store.getSelfProfile());
-        CardNavigator.showToast(`Synced ${res.intoAdded} Into kinks & ${res.limitsAdded} Profile Limits from /${displayHandle}`);
+      const learnAllBtn = document.createElement('button');
+      learnAllBtn.type = 'button';
+      learnAllBtn.style.cssText = `background:rgba(122, 163, 184, 0.18);color:${PALETTE.ui.accent};border:1px solid #4a6b7d;border-radius:5px;padding:3px 9px;cursor:pointer;font-size:11px;font-weight:600;margin-left:auto;`;
+      learnAllBtn.textContent = '✨ Auto-Configure Filters From My Profile';
+      learnAllBtn.title = 'Infer gender preferences from Orientation, set Local Region from your Location, and sync Into kinks & atomic Limits';
+      learnAllBtn.addEventListener('click', () => {
+        const res = Store.learnPreferencesFromSelf(Store.getSelfProfile(), true);
+        CardNavigator.showToast(`Configured filters from /${displayHandle}: ${res.intoAdded} Shared Kinks & ${res.limitsAdded} Limits`);
         withObserverPaused(enhanceProfilePage);
       });
 
-      selfBar.append(badge, stats, syncBtn);
+      selfBar.append(badge, stats, learnAllBtn);
       anchorBlock.insertAdjacentElement('afterend', selfBar);
       return profilePage;
     }
 
-    const today = new Date().toISOString().slice(0, 10);
+    const currentSettings = Store.getSettings();
     const existing = Store.getUser(currentKey);
-    if (existing.lastSeen !== today || (!existing.username && profilePage.username)) {
-      Store.setUser(currentKey, {
-        lastSeen: today,
-        username: profilePage.username || existing.username || null
-      });
+    const profileHeader = findProfileHeaderElement();
+    const liveSocial = profileHeader ? detectLiveSocialRelation(profileHeader) : { isFriend: false, isFollowing: false };
+
+    const hasManualWork = Boolean(
+      existing.status ||
+      existing.manualGender ||
+      existing.manualAge ||
+      existing.isFriend ||
+      existing.isFollowing ||
+      liveSocial.isFriend ||
+      liveSocial.isFollowing ||
+      (existing.note && existing.note.trim().length > 0)
+    );
+    const effectiveGenderCat = existing.manualGender || liveData.genderCategory || existing.genderCategory;
+    const effectiveLoc = liveData.location || existing.location || '';
+    const effectiveRel = liveData.relationships || existing.relationships || '';
+
+    const eligibleForCache = hasManualWork || isProfileEligibleForAutoCache({
+      genderCategory: effectiveGenderCat,
+      location: effectiveLoc,
+      relationships: effectiveRel,
+      fullText: `${liveData.headerText || ''} ${liveData.aboutText || ''}`
+    }, currentSettings);
+
+    if (eligibleForCache) {
+      const today = new Date().toISOString().slice(0, 10);
+      if (
+        existing.lastSeen !== today ||
+        (!existing.username && profilePage.username) ||
+        (liveData.location && liveData.location !== existing.location) ||
+        (liveSocial.isFriend && !existing.isFriend) ||
+        (liveSocial.isFollowing && !existing.isFollowing)
+      ) {
+        const patch = {
+          lastSeen: today,
+          username: profilePage.username || existing.username || null
+        };
+        if (liveData.location) patch.location = liveData.location;
+        if (liveSocial.isFriend) patch.isFriend = true;
+        if (liveSocial.isFollowing) patch.isFollowing = true;
+        Store.setUser(currentKey, patch);
+      }
     }
 
-    let cachedBio = Store.getCachedBio(currentKey, Store.getSettings().bioCacheTtlDays);
+    let cachedBio = Store.getCachedBio(currentKey, currentSettings.bioCacheTtlDays);
 
     if (
-      liveData.nonFetishFullText.length > 30 ||
+      eligibleForCache &&
+      (liveData.nonFetishFullText.length > 30 ||
       liveData.hasAbout === true ||
       liveData.fetishesText.length > 0 ||
       liveData.fetishesLimits.length > 0 ||
       liveData.writingsText.length > 0 ||
       liveData.groups.length > 0 ||
-      liveData.age !== null
+      liveData.age !== null ||
+      liveData.location !== null)
     ) {
       cachedBio = Store.mergeCachedProfile(currentKey, liveData, profilePage.username);
     }
 
     const latestUser = Store.getUser(currentKey);
-    const currentSettings = Store.getSettings();
     const sig = JSON.stringify({
       currentKey,
       age: resolveEffectiveAge(latestUser, cachedBio, liveData),
+      location: liveData.location || latestUser.location || cachedBio?.location || null,
       hasAbout: cachedBio ? cachedBio.hasAbout : null,
-      aboutLen: cachedBio ? cachedBio.aboutText.length : 0,
-      textLen: cachedBio ? cachedBio.text.length : 0,
+      aboutLen: cachedBio ? (cachedBio.aboutText || '').length : 0,
+      writingsLen: cachedBio ? (cachedBio.writingsText || '').length : 0,
       fetishLen: cachedBio ? (cachedBio.fetishesInto.length + cachedBio.fetishesLimits.length) : 0,
       groupCount: cachedBio && cachedBio.groups ? cachedBio.groups.length : 0,
       status: latestUser.status,
+      isFriend: latestUser.isFriend,
+      isFollowing: latestUser.isFollowing,
       manualGender: latestUser.manualGender,
       manualAge: latestUser.manualAge,
       note: latestUser.note,
       lastContacted: latestUser.lastContacted,
       genderCategory: latestUser.genderCategory,
       stickyProfileBar: currentSettings.stickyProfileBar,
+      exemptInteractedAndSocial: currentSettings.exemptInteractedAndSocial,
       hideNoAbout: currentSettings.hideNoAbout,
-      genderFilter: currentSettings.genderFilter,
+      localOnlyFilter: currentSettings.localOnlyFilter,
+      localRegions: currentSettings.localRegions,
+      relationshipFilter: currentSettings.relationshipFilter,
+      allowedGenders: currentSettings.allowedGenders,
+      strictGenderHideUnknown: currentSettings.strictGenderHideUnknown,
       filterByAge: currentSettings.filterByAge,
       minAge: currentSettings.minAge,
       maxAge: currentSettings.maxAge,
@@ -2935,9 +3624,9 @@
         isManualGender: resolvedGender.isManual,
         autoDetected: resolvedGender.autoDetected,
         genderRole: u.genderRole || latestBio?.genderRole || liveData?.genderRole || null,
-        location: u.location || latestBio?.location || liveData?.location || null,
-        relationships: u.relationships || latestBio?.relationships || liveData?.relationships || null,
-        lookingFor: u.lookingFor || latestBio?.lookingFor || liveData?.lookingFor || null
+        location: liveData?.location || u.location || latestBio?.location || null,
+        relationships: liveData?.relationships || u.relationships || latestBio?.relationships || null,
+        lookingFor: liveData?.lookingFor || u.lookingFor || latestBio?.lookingFor || null
       };
 
       Array.from(document.getElementsByClassName('flx-profile-bar')).forEach(el => el.remove());
@@ -2969,21 +3658,23 @@
         }
       );
 
-      const scanText = latestBio ? latestBio.text : '';
-      const fetishIntoText = getFetishIntoSearchText(latestBio);
-      const excludedHits = findSimpleMatches(fetishIntoText, settings.excludeKeywords);
+      const scanText = latestBio ? latestBio.text : (liveData.nonFetishFullText || '');
+      const excludeSourceText = getExcludeSearchText(latestBio, liveData.aboutText || '');
+      const excludedHits = findSimpleMatches(excludeSourceText, settings.excludeKeywords);
       const ruleHits = findRuleMatches('', scanText, settings.highlightRules);
       const limitConflicts = latestBio ? findLimitConflicts(latestBio.fetishesLimits, settings.highlightRules) : [];
       const missingAbout = Boolean(settings.hideNoAbout && latestBio && latestBio.hasAbout === false);
       const ageRejected = isAgeOutOfRange(demos.age, settings);
       const genderRejected = isGenderRejected(demos.genderCategory, settings);
+      const nonLocalRejected = isNonLocalRejected(demos.location, settings, false);
+      const relRejected = isRelationshipRejected(demos.relationships, settings);
 
-      appendMatchBadges(toolbar, latestBio, demos, missingAbout, ageRejected, genderRejected, ruleHits, limitConflicts, excludedHits, 'full');
+      appendMatchBadges(toolbar, latestBio, demos, missingAbout, ageRejected, genderRejected, nonLocalRejected, relRejected, ruleHits, limitConflicts, excludedHits, 'full');
 
       const pinBtn = document.createElement('button');
       pinBtn.type = 'button';
       pinBtn.style.cssText = isSticky
-        ? 'background:rgba(56,189,248,0.16);color:#7dd3fc;border:1px solid #0284c7;border-radius:5px;padding:2px 7px;cursor:pointer;font-size:11px;font-weight:600;margin-left:auto;'
+        ? `background:rgba(122, 163, 184, 0.16);color:${PALETTE.ui.accent};border:1px solid #4a6b7d;border-radius:5px;padding:2px 7px;cursor:pointer;font-size:11px;font-weight:600;margin-left:auto;`
         : 'background:#202024;color:#a1a1aa;border:1px solid #3f3f46;border-radius:5px;padding:2px 7px;cursor:pointer;font-size:11px;margin-left:auto;';
       pinBtn.textContent = isSticky ? '📌 Pinned' : '📌 Pin Bar';
       pinBtn.title = 'Keep this profile bar pinned at the top while scrolling';
@@ -2992,15 +3683,15 @@
         withObserverPaused(renderProfileBar);
       });
 
-      if (ruleHits.length > 0) {
+      if (ruleHits.length > 0 && excludedHits.length === 0 && !genderRejected && !nonLocalRejected && !relRejected) {
         wrapper.style.borderColor = ruleHits[0].color;
-      } else if (excludedHits.length > 0 || missingAbout || ageRejected || genderRejected) {
-        wrapper.style.borderColor = '#b91c1c';
+      } else if (excludedHits.length > 0 || missingAbout || ageRejected || genderRejected || nonLocalRejected || relRejected) {
+        wrapper.style.borderColor = PALETTE.stage.hidden.border;
       }
 
       wrapper.append(label, toolbar, pinBtn);
       targetAnchor.insertAdjacentElement('afterend', wrapper);
-      scheduleStickySync();
+      syncStickyViewportOffset();
     };
 
     renderProfileBar();
@@ -3008,53 +3699,61 @@
   }
 
   function insertTextIntoComposer(rootEl, textToInsert) {
-    const textareas = rootEl.getElementsByTagName('textarea');
-    for (const ta of textareas) {
-      if (ta.offsetParent !== null) {
-        const prefix = ta.value && !ta.value.endsWith('\n') ? `${ta.value}\n` : ta.value;
-        ta.value = `${prefix}${textToInsert}`;
-        ta.focus();
-        ta.dispatchEvent(new Event('input', { bubbles: true }));
-        ta.dispatchEvent(new Event('change', { bubbles: true }));
-        return true;
+    const searchRoots = [rootEl, document.getElementById('chat_dock'), document.getElementById('main-content')].filter(Boolean);
+    for (const scope of searchRoots) {
+      const textareas = scope.getElementsByTagName('textarea');
+      for (const ta of textareas) {
+        if (ta.offsetParent !== null) {
+          const prefix = ta.value && !ta.value.endsWith('\n') ? `${ta.value}\n` : ta.value;
+          ta.value = `${prefix}${textToInsert}`;
+          ta.focus();
+          ta.dispatchEvent(new Event('input', { bubbles: true }));
+          ta.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }
       }
-    }
-    const editors = rootEl.getElementsByTagName('lexxy-editor');
-    for (const ed of editors) {
-      if (ed.offsetParent !== null) {
-        ed.focus();
-        document.execCommand('insertText', false, textToInsert);
-        return true;
+      const editors = scope.getElementsByTagName('lexxy-editor');
+      for (const ed of editors) {
+        if (ed.offsetParent !== null) {
+          ed.focus();
+          document.execCommand('insertText', false, textToInsert);
+          return true;
+        }
       }
     }
     return false;
   }
 
   function enhanceChatContext() {
-    // Do not touch chat DOM while user is actively typing in a composer
+    const settings = Store.getSettings();
+    if (!settings.enableChatStrip) {
+      document.querySelectorAll('.flx-chat-context').forEach(el => el.remove());
+      return;
+    }
+
+    if (isUserScrolling) return;
     const active = document.activeElement;
     if (active && isElementEditableNode(active) && active.closest('#chat_dock, #chat_dock_thread, #main-content')) {
       return;
     }
 
-    const settings = Store.getSettings();
     const { selfId, selfUsername } = getSelfIdentity();
     const targets = [];
 
     const dockThread = document.getElementById('chat_dock_thread');
-    const dockContainer = document.getElementById('chat_dock') || dockThread;
-    if (dockThread && dockThread.innerHTML.trim().length > 0) {
-      targets.push({ scanRoot: dockThread, mountRoot: dockContainer, mode: 'dock' });
+    const dockContainer = document.getElementById('chat_dock');
+    if (dockThread && dockThread.innerHTML.trim().length > 0 && dockContainer) {
+      targets.push({ scanRoot: dockThread, dockEl: dockContainer, mode: 'dock' });
     } else {
-      document.querySelectorAll('#chat_dock > .flx-chat-context').forEach(el => el.remove());
+      document.querySelectorAll('.flx-chat-context[data-flx-chat-mode="dock"]').forEach(el => el.remove());
     }
 
     const path = window.location.pathname;
     if (path.startsWith('/inbox') || path.startsWith('/conversations')) {
       const mainContent = document.getElementById('main-content');
-      if (mainContent) {
-        targets.push({ scanRoot: mainContent, mountRoot: mainContent, mode: 'inbox' });
-      }
+      if (mainContent) targets.push({ scanRoot: mainContent, dockEl: null, mode: 'inbox' });
+    } else {
+      document.querySelectorAll('.flx-chat-context[data-flx-chat-mode="inbox"]').forEach(el => el.remove());
     }
 
     for (const target of targets) {
@@ -3081,43 +3780,34 @@
       const resolvedAge = resolveEffectiveAge(record, cachedBio);
 
       const scanText = cachedBio ? cachedBio.text : '';
-      const fetishIntoText = getFetishIntoSearchText(cachedBio);
+      const excludeSourceText = getExcludeSearchText(cachedBio);
       const ruleHits = findRuleMatches('', scanText, settings.highlightRules);
       const limitConflicts = cachedBio ? findLimitConflicts(cachedBio.fetishesLimits, settings.highlightRules) : [];
-      const excludedHits = findSimpleMatches(fetishIntoText, settings.excludeKeywords);
+      const excludedHits = findSimpleMatches(excludeSourceText, settings.excludeKeywords);
       const sharedGroups = getSharedOrNotableGroups(cachedBio?.groups || record.groups || []);
 
       const sig = JSON.stringify({
-        userKey,
-        age: resolvedAge,
-        status: record.status,
-        manualGender: record.manualGender,
-        note: record.note,
-        lastContacted: record.lastContacted,
-        hasCache: Boolean(cachedBio),
-        templateCount: settings.messageTemplates.length,
-        sharedGroups,
-        ruleHits,
-        limitConflicts,
-        excludedHits
+        mode: target.mode, userKey, age: resolvedAge, status: record.status,
+        manualGender: record.manualGender, note: record.note, lastContacted: record.lastContacted,
+        hasCache: Boolean(cachedBio), templateCount: settings.messageTemplates.length,
+        sharedGroups, ruleHits, limitConflicts, excludedHits
       });
 
-      const existingStrip = target.mountRoot.querySelector('.flx-chat-context');
+      const existingStrip = document.querySelector(`.flx-chat-context[data-flx-chat-mode="${target.mode}"]`);
       if (existingStrip && existingStrip.dataset.flxSig === sig) continue;
       if (existingStrip) existingStrip.remove();
 
       const strip = document.createElement('div');
       strip.className = 'flx-chat-context';
+      strip.dataset.flxChatMode = target.mode;
       strip.dataset.flxSig = sig;
-      strip.style.cssText = target.mode === 'dock'
-        ? 'width:100%;box-sizing:border-box;margin:0 0 4px 0;padding:5px 8px;background:#16161a;border:1px solid #383842;border-radius:6px;font-size:11px;color:#e4e4e7;font-family:system-ui,sans-serif;display:flex;flex-direction:column;gap:4px;z-index:20;position:relative;flex-shrink:0;'
-        : 'width:100%;max-width:960px;box-sizing:border-box;margin:8px auto;padding:8px 12px;background:#16161a;border:1px solid #383842;border-radius:8px;font-size:12px;color:#e4e4e7;font-family:system-ui,sans-serif;display:flex;flex-direction:column;gap:6px;z-index:20;position:relative;flex-shrink:0;';
 
-      if (ruleHits.length > 0) {
-        strip.style.borderLeft = `3px solid ${ruleHits[0].color}`;
-      } else if (record.status && STAGE_MAP[record.status]) {
-        strip.style.borderLeft = `3px solid ${STAGE_MAP[record.status].color}`;
-      }
+      strip.style.cssText = target.mode === 'dock'
+        ? 'width:100%;box-sizing:border-box;margin:0;padding:5px 8px;background:#16161a;border-bottom:1px solid #383842;font-size:11px;color:#e4e4e7;font-family:system-ui,sans-serif;display:flex;flex-direction:column;gap:4px;position:static;flex-shrink:0;overflow:hidden;'
+        : 'width:100%;max-width:960px;box-sizing:border-box;margin:6px auto;padding:7px 12px;background:#16161a;border:1px solid #383842;border-radius:8px;font-size:12px;color:#e4e4e7;font-family:system-ui,sans-serif;display:flex;flex-direction:column;gap:5px;position:static;flex-shrink:0;overflow:hidden;';
+
+      if (ruleHits.length > 0) strip.style.borderLeft = `3px solid ${ruleHits[0].color}`;
+      else if (record.status && STAGE_MAP[record.status]) strip.style.borderLeft = `3px solid ${STAGE_MAP[record.status].color}`;
 
       const topRow = document.createElement('div');
       topRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;width:100%;';
@@ -3126,17 +3816,15 @@
       left.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
 
       const title = document.createElement('strong');
-      title.style.color = '#93c5fd';
-      title.textContent = `CRM: /${displayHandle}`;
+      title.style.color = PALETTE.ui.accent;
+      title.textContent = `CRM: /${escapeHtml(displayHandle)}`;
       left.appendChild(title);
 
       const demoPill = createDemographicPill(
-        resolvedAge,
-        resolvedGender.gender,
+        resolvedAge, resolvedGender.gender,
         record.genderRole || cachedBio?.genderRole || null,
         record.location || cachedBio?.location || null,
-        resolvedGender.isManual,
-        resolvedGender.genderCategory
+        resolvedGender.isManual, resolvedGender.genderCategory
       );
       if (demoPill) left.appendChild(demoPill);
 
@@ -3145,7 +3833,6 @@
 
       const tplSel = document.createElement('select');
       tplSel.style.cssText = 'background:#222228;color:#d4d4d8;border:1px solid #3f3f46;border-radius:4px;padding:1px 5px;font-size:11px;cursor:pointer;max-width:130px;';
-      tplSel.title = 'Insert Outreach Template';
       const tplDefault = document.createElement('option');
       tplDefault.value = '';
       tplDefault.textContent = 'Template ▾';
@@ -3153,7 +3840,7 @@
       for (const tpl of settings.messageTemplates) {
         const opt = document.createElement('option');
         opt.value = tpl.id;
-        opt.textContent = tpl.title;
+        opt.textContent = escapeHtml(tpl.title);
         tplSel.appendChild(opt);
       }
 
@@ -3182,8 +3869,7 @@
       });
 
       const genderSel = buildGenderSelect(
-        record,
-        resolvedGender.autoDetected,
+        record, resolvedGender.autoDetected,
         (nextManualGender) => {
           Store.setUser(userKey, { username: displayHandle, manualGender: nextManualGender });
           withObserverPaused(enhanceChatContext);
@@ -3234,26 +3920,51 @@
       if (record.note) {
         const noteLine = document.createElement('div');
         noteLine.style.cssText = 'padding:3px 7px;background:#1e1e24;border-left:2px solid #eab308;color:#fef08a;border-radius:3px;white-space:pre-wrap;width:100%;box-sizing:border-box;';
-        noteLine.textContent = record.note;
+        noteLine.textContent = escapeHtml(record.note);
         strip.appendChild(noteLine);
       }
 
-      if (target.mode === 'dock') {
-        target.mountRoot.prepend(strip);
-      } else {
-        const headerEl = target.mountRoot.querySelector('header');
-        if (headerEl) {
-          headerEl.insertAdjacentElement('afterend', strip);
-        } else {
-          target.mountRoot.prepend(strip);
-        }
+      if (target.mode === 'dock' && target.dockEl) target.dockEl.insertAdjacentElement('afterbegin', strip);
+      else {
+        const headerEl = target.scanRoot.querySelector('header');
+        if (headerEl) headerEl.insertAdjacentElement('afterend', strip);
+        else target.scanRoot.prepend(strip);
       }
     }
   }
 
   // =========================================================================
-  // 10. LOCAL CRM DASHBOARD MODAL (SHADOW DOM ISOLATED)
+  // 10. FILE DOWNLOAD / UPLOAD HELPERS & LOCAL CRM DASHBOARD MODAL
   // =========================================================================
+  function downloadTextFile(filename, content, mimeType = 'application/json') {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function promptJsonFileUpload(onLoaded) {
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = '.json,application/json';
+    fileInput.style.display = 'none';
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => onLoaded(String(reader.result || ''), file.name);
+      reader.readAsText(file);
+    });
+    document.body.appendChild(fileInput);
+    fileInput.click();
+    setTimeout(() => fileInput.remove(), 60000);
+  }
+
   const CrmModal = {
     host: null,
     shadow: null,
@@ -3282,7 +3993,13 @@
       for (const key of allKeys) {
         if (selfUsername && key === selfUsername) continue;
         const u = this.normalizeUser(users[key]);
-        const c = cache[key] || null;
+        const rawC = cache[key] || null;
+        const c = rawC ? Object.assign({}, rawC, {
+          aboutText: rawC.aboutText || rawC.sections?.about || '',
+          writingsText: rawC.writingsText || rawC.sections?.writings || '',
+          text: buildCompositeSearchText(rawC)
+        }) : null;
+
         const displayHandle = u.username || (c && c.username) || key;
         const profileUrl = key.startsWith('users/')
           ? `${window.location.origin}/${key}`
@@ -3290,7 +4007,8 @@
 
         const bioText = c && typeof c.text === 'string' ? c.text : '';
         const aboutText = c && typeof c.aboutText === 'string' ? c.aboutText : '';
-        const fetishesText = c && c.sections && typeof c.sections.fetishes === 'string' ? c.sections.fetishes : '';
+        const writingsText = c && typeof c.writingsText === 'string' ? c.writingsText : '';
+        const fetishesText = c && typeof c.fetishesRaw === 'string' ? c.fetishesRaw : '';
         const fetishesInto = c && Array.isArray(c.fetishesInto) ? c.fetishesInto : [];
 
         let fetishesLimits = c && Array.isArray(c.fetishesLimits) ? c.fetishesLimits : [];
@@ -3298,7 +4016,7 @@
           fetishesLimits = extractLimitsFromProfileText(aboutText, bioText);
         }
 
-        const hasCache = Boolean(c && bioText.length > 0);
+        const hasCache = Boolean(c && (bioText.length > 0 || c.hasAbout !== null || fetishesLimits.length > 0));
         const hasAbout = Boolean(c && c.hasAbout === true);
         const noAbout = Boolean(c && c.hasAbout === false);
         const hasFetishes = Boolean(fetishesInto.length > 0 || fetishesLimits.length > 0 || fetishesText.length > 0);
@@ -3312,10 +4030,10 @@
         const groups = (c && Array.isArray(c.groups) && c.groups.length > 0) ? c.groups : (u.groups || []);
         const sharedGroups = getSharedOrNotableGroups(groups);
 
-        const fetishIntoText = getFetishIntoSearchText(c);
+        const excludeSourceText = getExcludeSearchText(c);
         const ruleHits = findRuleMatches('', bioText, settings.highlightRules);
         const limitConflicts = findLimitConflicts(fetishesLimits, settings.highlightRules);
-        const excludedHits = findSimpleMatches(fetishIntoText, settings.excludeKeywords);
+        const excludedHits = findSimpleMatches(excludeSourceText, settings.excludeKeywords);
 
         const daysSinceContact = daysSinceIsoDate(u.lastContacted);
         const followUpDue = Boolean(
@@ -3332,41 +4050,15 @@
         );
 
         entries.push({
-          key,
-          displayHandle,
-          profileUrl,
-          status: u.status || null,
-          note: u.note || '',
-          lastSeen: u.lastSeen || null,
-          lastContacted: u.lastContacted || null,
-          daysSinceContact,
-          followUpDue,
-          cachedDate,
-          recentStamp,
-          age,
-          gender: resolvedGender.gender,
-          genderCategory: resolvedGender.genderCategory,
-          isManualGender: resolvedGender.isManual,
-          manualGender: u.manualGender || null,
-          genderRole,
-          location,
-          relationships,
-          lookingFor,
-          groups,
-          sharedGroups,
-          isLocal: isLocalPdx({ location, fullText: bioText }),
-          hasCache,
-          hasAbout,
-          noAbout,
-          hasFetishes,
-          aboutText,
-          fetishesText,
-          fetishesInto,
-          fetishesLimits,
-          fullText: bioText,
-          ruleHits,
-          limitConflicts,
-          excludedHits
+          key, displayHandle, profileUrl, status: u.status || null, note: u.note || '',
+          lastSeen: u.lastSeen || null, lastContacted: u.lastContacted || null,
+          daysSinceContact, followUpDue, isFriend: Boolean(u.isFriend), isFollowing: Boolean(u.isFollowing),
+          cachedDate, recentStamp, age, gender: resolvedGender.gender,
+          genderCategory: resolvedGender.genderCategory, isManualGender: resolvedGender.isManual,
+          manualGender: u.manualGender || null, genderRole, location, relationships, lookingFor,
+          groups, sharedGroups, isLocal: isLocationLocal(location, settings),
+          hasCache, hasAbout, noAbout, hasFetishes, aboutText, writingsText, fetishesText,
+          fetishesInto, fetishesLimits, fullText: bioText, ruleHits, limitConflicts, excludedHits
         });
       }
 
@@ -3375,21 +4067,10 @@
 
     normalizeUser(raw) {
       return Object.assign({
-        status: null,
-        note: '',
-        lastSeen: null,
-        lastContacted: null,
-        username: null,
-        age: null,
-        manualAge: null,
-        gender: null,
-        genderCategory: null,
-        manualGender: null,
-        genderRole: null,
-        location: null,
-        relationships: null,
-        lookingFor: null,
-        groups: []
+        status: null, note: '', lastSeen: null, lastContacted: null,
+        isFriend: false, isFollowing: false, username: null, age: null,
+        manualAge: null, gender: null, genderCategory: null, manualGender: null,
+        genderRole: null, location: null, relationships: null, lookingFor: null, groups: []
       }, raw || {});
     },
 
@@ -3410,31 +4091,19 @@
           e.lookingFor ? `Looking for: ${e.lookingFor}` : ''
         ].filter(Boolean).join(' • ');
 
-        lines.push(`## [/${e.displayHandle}](${e.profileUrl}) — ${stageLabel}`);
-        if (meta) lines.push(`* **Profile:** ${meta}`);
+        lines.push(`## [/${escapeHtml(e.displayHandle)}](${e.profileUrl}) — ${stageLabel}`);
+        if (meta) lines.push(`* **Profile:** ${escapeHtml(meta)}`);
         if (e.lastContacted) lines.push(`* **Last Contacted:** ${e.lastContacted} (${e.daysSinceContact}d ago)`);
         else if (e.lastSeen) lines.push(`* **Last Viewed:** ${e.lastSeen}`);
-        if (e.ruleHits.length > 0) {
-          lines.push(`* **Matches:** ${e.ruleHits.map(h => `${h.label} (${h.keyword})`).join(', ')}`);
-        }
-        if (e.fetishesLimits.length > 0) {
-          lines.push(`* **Profile Limits:** ${e.fetishesLimits.join(', ')}`);
-        }
-        if (e.limitConflicts.length > 0) {
-          lines.push(`* **Limit Conflicts:** ${e.limitConflicts.map(c => c.keyword).join(', ')}`);
-        }
-        if (e.excludedHits.length > 0) {
-          lines.push(`* **Red Kinks (Fetishes):** ${e.excludedHits.join(', ')}`);
-        }
-        if (e.sharedGroups.length > 0) {
-          lines.push(`* **Shared/Local Groups:** ${e.sharedGroups.join(', ')}`);
-        }
-        if (e.note) {
-          lines.push(`> **Note:** ${e.note.replace(/\n/g, '\n> ')}`);
-        }
+        if (e.ruleHits.length > 0) lines.push(`* **Matches:** ${e.ruleHits.map(h => `${h.label} (${h.keyword})`).join(', ')}`);
+        if (e.fetishesLimits.length > 0) lines.push(`* **Profile Limits:** ${e.fetishesLimits.map(escapeHtml).join(', ')}`);
+        if (e.limitConflicts.length > 0) lines.push(`* **Limit Conflicts:** ${e.limitConflicts.map(c => c.keyword).join(', ')}`);
+        if (e.excludedHits.length > 0) lines.push(`* **Excludes:** ${e.excludedHits.map(escapeHtml).join(', ')}`);
+        if (e.sharedGroups.length > 0) lines.push(`* **Shared Groups:** ${e.sharedGroups.map(escapeHtml).join(', ')}`);
+        if (e.note) lines.push(`> **Note:** ${escapeHtml(e.note).replace(/\n/g, '\n> ')}`);
         if (e.aboutText) {
-          const snippet = e.aboutText.slice(0, 320).replace(/\n+/g, ' ');
-          lines.push(`\n${snippet}${e.aboutText.length > 320 ? '…' : ''}`);
+          const snippet = e.aboutText.slice(0, 500).replace(/\n+/g, ' ');
+          lines.push(`\n${escapeHtml(snippet)}${e.aboutText.length > 500 ? '…' : ''}`);
         }
         lines.push('\n---\n');
       }
@@ -3446,7 +4115,8 @@
       if (this.isOpen) return;
       this.isOpen = true;
       const s = Store.getSettings();
-      this.filterGender = s.genderFilter || 'all';
+      this.filterRel = s.relationshipFilter || 'all';
+      this.localOnly = Boolean(s.localOnlyFilter);
       if (s.filterByAge) {
         if (!this.minAgeFilter) this.minAgeFilter = String(s.minAge || '');
         if (!this.maxAgeFilter) this.maxAgeFilter = String(s.maxAge || '');
@@ -3468,9 +4138,7 @@
     },
 
     _onKeyDown(e) {
-      if (e.key === 'Escape') {
-        CrmModal.close();
-      }
+      if (e.key === 'Escape') CrmModal.close();
     },
 
     renderModal() {
@@ -3492,7 +4160,6 @@
             ::-webkit-scrollbar { width: 7px; height: 7px; }
             ::-webkit-scrollbar-track { background: #121215; }
             ::-webkit-scrollbar-thumb { background: #33333b; border-radius: 999px; }
-            ::-webkit-scrollbar-thumb:hover { background: #4b4b57; }
             .backdrop {
               position: fixed; inset: 0; background: rgba(6, 6, 9, 0.82); backdrop-filter: blur(6px);
               display: flex; align-items: center; justify-content: center; padding: 16px;
@@ -3509,7 +4176,7 @@
               display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
             }
             .title-wrap { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-            .title { font-size: 16px; font-weight: 700; color: #fafafa; letter-spacing: -0.01em; }
+            .title { font-size: 16px; font-weight: 700; color: #fafafa; }
             .subtitle { font-size: 12px; color: #a1a1aa; }
             .controls {
               padding: 11px 18px; background: #18181d; border-bottom: 1px solid #282830;
@@ -3520,82 +4187,48 @@
               background: #202026; color: #f4f4f5; border: 1px solid #3a3a44; border-radius: 6px;
               padding: 5px 9px; font-size: 12px; font-family: inherit;
             }
-            input[type="text"]:focus, input[type="number"]:focus, select:focus, textarea:focus {
-              outline: none; border-color: #eab308;
-            }
             .search-input { flex: 1; min-width: 200px; }
             .age-input { width: 72px; }
             .tabs { display: flex; gap: 5px; flex-wrap: wrap; }
             button {
               background: #222228; color: #d4d4d8; border: 1px solid #3a3a44; border-radius: 6px;
               padding: 5px 9px; cursor: pointer; font-size: 12px; font-family: inherit;
-              transition: background 0.15s, border-color 0.15s, color 0.15s;
             }
             button:hover { background: #2d2d35; color: #fff; }
-            button.active-tab { background: rgba(234, 179, 8, 0.16); border-color: #ca8a04; color: #fde047; font-weight: 600; }
+            button.active-tab { background: rgba(212, 168, 67, 0.16); border-color: #9a7b2e; color: #fde047; font-weight: 600; }
             button.toggle-pill { font-size: 11px; padding: 4px 8px; }
-            button.toggle-pill.on { background: rgba(56, 189, 248, 0.16); border-color: #0284c7; color: #7dd3fc; font-weight: 600; }
+            button.toggle-pill.on { background: rgba(122, 163, 184, 0.16); border-color: #4a6b7d; color: #7dd3fc; font-weight: 600; }
             button.danger-ghost { color: #fca5a5; border-color: #4c1d1d; }
-            button.danger-ghost:hover { background: #3f1515; }
-            .list {
-              flex: 1; overflow-y: auto; padding: 14px 18px;
-              display: flex; flex-direction: column; gap: 12px;
-            }
-            .empty {
-              text-align: center; color: #71717a; padding: 54px 16px; font-size: 13px;
-            }
-            .card {
-              background: #1a1a20; border: 1px solid #2d2d36; border-radius: 10px;
-              padding: 13px 15px; display: flex; flex-direction: column; gap: 9px;
-              box-shadow: 0 2px 10px rgba(0,0,0,0.25);
-            }
-            .card-top {
-              display: flex; align-items: center; justify-content: space-between;
-              gap: 10px; flex-wrap: wrap;
-            }
-            .user-link {
-              color: #93c5fd; font-weight: 700; font-size: 15px; text-decoration: none;
-            }
-            .user-link:hover { text-decoration: underline; color: #bfdbfe; }
+            .list { flex: 1; overflow-y: auto; padding: 14px 18px; display: flex; flex-direction: column; gap: 12px; }
+            .empty { text-align: center; color: #71717a; padding: 54px 16px; font-size: 13px; }
+            .card { background: #1a1a20; border: 1px solid #2d2d36; border-radius: 10px; padding: 13px 15px; display: flex; flex-direction: column; gap: 9px; }
+            .card-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+            .user-link { color: #93c5fd; font-weight: 700; font-size: 15px; text-decoration: none; }
+            .user-link:hover { text-decoration: underline; }
             .badges { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
-            .pill {
-              font-size: 11px; padding: 2px 7px; border-radius: 5px;
-              background: #24242b; color: #a1a1aa; border: 1px solid #363640;
-            }
-            .pill-ex { background: rgba(239,68,68,0.16); color: #fca5a5; border-color: #b91c1c; }
-            .pill-warn { background: rgba(245,158,11,0.18); color: #fcd34d; border-color: #d97706; }
-            .pill-group { background: rgba(52,211,153,0.12); color: #6ee7b7; border-color: rgba(52,211,153,0.35); }
+            .pill { font-size: 11px; padding: 2px 7px; border-radius: 5px; background: #24242b; color: #a1a1aa; border: 1px solid #363640; }
+            .pill-ex { background: rgba(201, 122, 107, 0.16); color: #fca5a5; border-color: #8b4f44; }
+            .pill-warn { background: rgba(212, 168, 67, 0.18); color: #fcd34d; border-color: #9a7b2e; }
+            .pill-group { background: rgba(138, 184, 150, 0.12); color: #6ee7b7; border-color: rgba(138, 184, 150, 0.35); }
             .stage-bar { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
             .stage-btn { padding: 3px 8px; font-size: 11px; border-radius: 5px; }
             .gender-seg { display: inline-flex; border: 1px solid #3a3a44; border-radius: 5px; overflow: hidden; }
             .gender-seg button { border: none; border-radius: 0; padding: 3px 7px; font-size: 11px; background: #1d1d24; }
-            .gender-seg button.g-female { background: rgba(244,114,182,0.22); color: #f9a8d4; font-weight: 600; }
-            .gender-seg button.g-male { background: rgba(59,130,246,0.22); color: #93c5fd; font-weight: 600; }
-            .gender-seg button.g-other { background: rgba(168,85,247,0.22); color: #d8b4fe; font-weight: 600; }
+            .gender-seg button.g-female { background: rgba(212, 168, 67, 0.22); color: #fde047; font-weight: 600; }
+            .gender-seg button.g-male { background: rgba(122, 163, 184, 0.22); color: #7dd3fc; font-weight: 600; }
+            .gender-seg button.g-other { background: rgba(138, 184, 150, 0.22); color: #6ee7b7; font-weight: 600; }
             .gender-seg button.g-auto { background: #2c2c36; color: #e4e4e7; font-weight: 600; }
             .note-row { display: flex; gap: 8px; align-items: flex-start; width: 100%; }
-            .note-area {
-              flex: 1; min-height: 44px; resize: vertical; line-height: 1.45;
-              background: #131317; border-color: #32323c;
-            }
-            .cache-panel {
-              background: #131317; border: 1px solid #272730; border-radius: 7px;
-              padding: 8px 10px; display: flex; flex-direction: column; gap: 6px;
-            }
-            .cache-header {
-              display: flex; align-items: center; justify-content: space-between;
-              gap: 8px; flex-wrap: wrap; font-size: 11px; color: #8e8e9a;
-            }
-            .sub-tabs { display: flex; gap: 4px; }
+            .note-area { flex: 1; min-height: 44px; resize: vertical; line-height: 1.45; background: #131317; border-color: #32323c; }
+            .cache-panel { background: #131317; border: 1px solid #272730; border-radius: 7px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+            .cache-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 11px; color: #8e8e9a; }
+            .sub-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
             .sub-tab { padding: 2px 7px; font-size: 11px; border-radius: 4px; }
             .sub-tab.active { background: #2c2c36; color: #f4f4f5; border-color: #525260; }
-            .bio-body {
-              font-size: 12px; color: #d4d4d8; line-height: 1.5;
-              white-space: pre-wrap; max-height: 150px; overflow-y: auto;
-            }
+            .bio-body { font-size: 12px; color: #d4d4d8; line-height: 1.5; white-space: pre-wrap; max-height: 220px; overflow-y: auto; }
             .fetish-group { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
-            .ftag-into { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(16,185,129,0.14); color: #6ee7b7; border: 1px solid rgba(16,185,129,0.35); }
-            .ftag-limit { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(239,68,68,0.14); color: #fca5a5; border: 1px solid rgba(239,68,68,0.35); }
+            .ftag-into { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(138, 184, 150, 0.14); color: #6ee7b7; border: 1px solid rgba(138, 184, 150, 0.35); }
+            .ftag-limit { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(201, 122, 107, 0.14); color: #fca5a5; border: 1px solid rgba(201, 122, 107, 0.35); }
           </style>
           <div class="backdrop" id="crm-backdrop">
             <div class="modal" role="dialog" aria-modal="true" aria-label="Local FetLife CRM">
@@ -3605,45 +4238,45 @@
                   <span class="subtitle" id="crm-summary"></span>
                 </div>
                 <div class="stage-bar">
-                  <button type="button" id="crm-export-md" title="Copy formatted Markdown summary of filtered entries">Export Markdown</button>
-                  <button type="button" id="crm-export" title="Copy raw JSON backup">Export JSON</button>
+                  <button type="button" id="crm-export-md">Download .md</button>
+                  <button type="button" id="crm-export">Download .json</button>
                   <button type="button" id="crm-close">✕ Close (Esc)</button>
                 </div>
               </div>
               <div class="controls">
                 <div class="control-row">
                   <input type="text" class="search-input" id="crm-search" placeholder="Search handle, location, groups, notes, About, or fetishes...">
-                  <select id="crm-gender-filter" title="Filter by Gender">
+                  <select id="crm-gender-filter">
                     <option value="all">All Genders</option>
-                    <option value="female">♀ Female Only</option>
+                    <option value="female">♀ Cis Female Only</option>
                     <option value="male">♂ Male Only</option>
-                    <option value="other">⚧ NB / Trans / Other</option>
+                    <option value="other"> transgender Trans / NB / Other</option>
                     <option value="unknown">Gender Unknown</option>
                   </select>
-                  <select id="crm-rel-filter" title="Filter by Relationship Status">
+                  <select id="crm-rel-filter">
                     <option value="all">All Relationships</option>
                     <option value="single">Single / Available</option>
                     <option value="partnered">Partnered / Married / Poly</option>
                     <option value="unknown">Relationship Unknown</option>
                   </select>
-                  <input type="number" class="age-input" id="crm-age-min" min="18" max="99" placeholder="Min age" title="Minimum Age">
-                  <input type="number" class="age-input" id="crm-age-max" min="18" max="99" placeholder="Max age" title="Maximum Age">
+                  <input type="number" class="age-input" id="crm-age-min" min="18" max="99" placeholder="Min age">
+                  <input type="number" class="age-input" id="crm-age-max" min="18" max="99" placeholder="Max age">
                 </div>
                 <div class="control-row">
-                  <select id="crm-cat-filter" title="Filter by Content Category">
+                  <select id="crm-cat-filter">
                     <option value="all">All Categories</option>
-                    ${settings.highlightRules.map(r => `<option value="rule:${r.id || r.label}">${r.label}</option>`).join('')}
-                    <option value="excluded">Has Red Kink (Fetishes)</option>
+                    ${settings.highlightRules.map(r => `<option value="rule:${r.id || r.label}">${escapeHtml(r.label)}</option>`).join('')}
+                    <option value="excluded">Has Excluded Term</option>
                     <option value="conflict">Has Limit Conflict</option>
                   </select>
-                  <select id="crm-sort" title="Sort order">
+                  <select id="crm-sort">
                     <option value="matches">Sort: Most Categories Matched</option>
                     <option value="priority">Sort: Pipeline Stage & Notes</option>
                     <option value="recent">Sort: Most Recent</option>
                     <option value="alpha">Sort: Username (A–Z)</option>
                   </select>
-                  <button type="button" class="toggle-pill" id="crm-tgl-excludes">🚫 Hide Red Kinks</button>
-                  <button type="button" class="toggle-pill" id="crm-tgl-local">📍 Local PDX Only</button>
+                  <button type="button" class="toggle-pill" id="crm-tgl-excludes">🚫 Hide Excludes</button>
+                  <button type="button" class="toggle-pill" id="crm-tgl-local">📍 Local Region Only</button>
                   <button type="button" class="toggle-pill" id="crm-tgl-followup">⏰ Follow-Up Due</button>
                 </div>
                 <div class="tabs" id="crm-tabs"></div>
@@ -3680,77 +4313,33 @@
         };
         syncToggleButtons();
 
-        $('crm-backdrop').addEventListener('click', (e) => {
-          if (e.target === $('crm-backdrop')) this.close();
-        });
+        $('crm-backdrop').addEventListener('click', (e) => { if (e.target === $('crm-backdrop')) this.close(); });
         $('crm-close').addEventListener('click', () => this.close());
 
         $('crm-export').addEventListener('click', () => {
-          const dump = Store.exportAll();
-          if (navigator.clipboard) {
-            navigator.clipboard.writeText(dump).then(() => {
-              $('crm-summary').textContent = '✓ Copied full JSON backup to clipboard';
-            }).catch(() => window.prompt('Copy JSON backup:', dump));
-          } else {
-            window.prompt('Copy JSON backup:', dump);
-          }
+          const today = new Date().toISOString().slice(0, 10);
+          downloadTextFile(`FetLife-CRM-Backup-${today}.json`, Store.exportAll(), 'application/json');
+          $('crm-summary').textContent = `✓ Downloaded FetLife-CRM-Backup-${today}.json`;
         });
 
         $('crm-export-md').addEventListener('click', () => {
+          const today = new Date().toISOString().slice(0, 10);
           const md = this.generateMarkdownDossier(this.lastRenderedEntries);
-          if (navigator.clipboard) {
-            navigator.clipboard.writeText(md).then(() => {
-              $('crm-summary').textContent = `✓ Copied Markdown dossier (${this.lastRenderedEntries.length} profiles) to clipboard`;
-            }).catch(() => window.prompt('Copy Markdown dossier:', md));
-          } else {
-            window.prompt('Copy Markdown dossier:', md);
-          }
+          downloadTextFile(`FetLife-CRM-Dossier-${today}.md`, md, 'text/markdown');
+          $('crm-summary').textContent = `✓ Downloaded Markdown dossier (${this.lastRenderedEntries.length} profiles)`;
         });
 
-        searchInput.addEventListener('input', (e) => {
-          this.searchQuery = e.target.value;
-          this.refreshList();
-        });
-        genderSelect.addEventListener('change', (e) => {
-          this.filterGender = e.target.value;
-          this.refreshList();
-        });
-        relSelect.addEventListener('change', (e) => {
-          this.filterRel = e.target.value;
-          this.refreshList();
-        });
-        minAgeInput.addEventListener('input', (e) => {
-          this.minAgeFilter = e.target.value;
-          this.refreshList();
-        });
-        maxAgeInput.addEventListener('input', (e) => {
-          this.maxAgeFilter = e.target.value;
-          this.refreshList();
-        });
-        catSelect.addEventListener('change', (e) => {
-          this.filterCategory = e.target.value;
-          this.refreshList();
-        });
-        sortSelect.addEventListener('change', (e) => {
-          this.sortBy = e.target.value;
-          this.refreshList();
-        });
+        searchInput.addEventListener('input', (e) => { this.searchQuery = e.target.value; this.refreshList(); });
+        genderSelect.addEventListener('change', (e) => { this.filterGender = e.target.value; this.refreshList(); });
+        relSelect.addEventListener('change', (e) => { this.filterRel = e.target.value; this.refreshList(); });
+        minAgeInput.addEventListener('input', (e) => { this.minAgeFilter = e.target.value; this.refreshList(); });
+        maxAgeInput.addEventListener('input', (e) => { this.maxAgeFilter = e.target.value; this.refreshList(); });
+        catSelect.addEventListener('change', (e) => { this.filterCategory = e.target.value; this.refreshList(); });
+        sortSelect.addEventListener('change', (e) => { this.sortBy = e.target.value; this.refreshList(); });
 
-        btnExcludes.addEventListener('click', () => {
-          this.hideExcludes = !this.hideExcludes;
-          syncToggleButtons();
-          this.refreshList();
-        });
-        btnLocal.addEventListener('click', () => {
-          this.localOnly = !this.localOnly;
-          syncToggleButtons();
-          this.refreshList();
-        });
-        btnFollowUp.addEventListener('click', () => {
-          this.followUpOnly = !this.followUpOnly;
-          syncToggleButtons();
-          this.refreshList();
-        });
+        btnExcludes.addEventListener('click', () => { this.hideExcludes = !this.hideExcludes; syncToggleButtons(); this.refreshList(); });
+        btnLocal.addEventListener('click', () => { this.localOnly = !this.localOnly; syncToggleButtons(); this.refreshList(); });
+        btnFollowUp.addEventListener('click', () => { this.followUpOnly = !this.followUpOnly; syncToggleButtons(); this.refreshList(); });
 
         this.refreshList();
         setTimeout(() => searchInput.focus(), 20);
@@ -3768,6 +4357,7 @@
         messaged: allEntries.filter(e => e.status === 'messaged').length,
         talking: allEntries.filter(e => e.status === 'talking').length,
         met: allEntries.filter(e => e.status === 'met').length,
+        social: allEntries.filter(e => e.isFriend || e.isFollowing).length,
         notes: allEntries.filter(e => e.note.trim().length > 0).length,
         cached: allEntries.filter(e => e.hasCache).length,
         hasAbout: allEntries.filter(e => e.hasAbout).length,
@@ -3781,6 +4371,7 @@
         { id: 'messaged', label: `✉ Messaged (${counts.messaged})` },
         { id: 'talking', label: `💬 Talking (${counts.talking})` },
         { id: 'met', label: `☕ Met IRL (${counts.met})` },
+        { id: 'social', label: `🤝 Friends/Follows (${counts.social})` },
         { id: 'notes', label: `✎ Noted (${counts.notes})` },
         { id: 'cached', label: `Cached (${counts.cached})` },
         { id: 'hasAbout', label: `About ✓ (${counts.hasAbout})` },
@@ -3795,10 +4386,7 @@
         btn.type = 'button';
         btn.className = this.filterStatus === t.id ? 'active-tab' : '';
         btn.textContent = t.label;
-        btn.addEventListener('click', () => {
-          this.filterStatus = t.id;
-          this.refreshList();
-        });
+        btn.addEventListener('click', () => { this.filterStatus = t.id; this.refreshList(); });
         tabsEl.appendChild(btn);
       }
 
@@ -3811,6 +4399,7 @@
         if (this.filterStatus === 'messaged' && entry.status !== 'messaged') return false;
         if (this.filterStatus === 'talking' && entry.status !== 'talking') return false;
         if (this.filterStatus === 'met' && entry.status !== 'met') return false;
+        if (this.filterStatus === 'social' && !entry.isFriend && !entry.isFollowing) return false;
         if (this.filterStatus === 'notes' && !entry.note.trim()) return false;
         if (this.filterStatus === 'cached' && !entry.hasCache) return false;
         if (this.filterStatus === 'hasAbout' && !entry.hasAbout) return false;
@@ -3823,9 +4412,9 @@
         if (this.filterGender === 'unknown' && entry.genderCategory !== null) return false;
 
         if (this.filterRel === 'single') {
-          if (!entry.relationships || !/single|solo|unpartnered|available/i.test(entry.relationships)) return false;
+          if (classifyRelationshipStatus(entry.relationships) !== 'single') return false;
         } else if (this.filterRel === 'partnered') {
-          if (!entry.relationships || /single|solo|unpartnered|available/i.test(entry.relationships)) return false;
+          if (classifyRelationshipStatus(entry.relationships) !== 'partnered') return false;
         } else if (this.filterRel === 'unknown') {
           if (entry.relationships) return false;
         }
@@ -3847,21 +4436,11 @@
 
         if (q) {
           const haystack = [
-            entry.displayHandle,
-            entry.key,
-            entry.gender || '',
-            entry.genderRole || '',
-            entry.location || '',
-            entry.relationships || '',
-            entry.lookingFor || '',
-            entry.groups.join(' '),
-            entry.note,
-            entry.aboutText,
-            entry.fetishesText,
-            entry.fetishesLimits.join(' '),
-            entry.fullText,
-            ...entry.ruleHits.map(h => `${h.label} ${h.keyword}`),
-            ...entry.excludedHits
+            entry.displayHandle, entry.key, entry.gender || '', entry.genderRole || '',
+            entry.location || '', entry.relationships || '', entry.lookingFor || '',
+            entry.groups.join(' '), entry.note, entry.aboutText, entry.writingsText,
+            entry.fetishesText, entry.fetishesLimits.join(' '), entry.fullText,
+            ...entry.ruleHits.map(h => `${h.label} ${h.keyword}`), ...entry.excludedHits
           ].join(' ').toLowerCase();
           if (!haystack.includes(q)) return false;
         }
@@ -3879,12 +4458,8 @@
       };
 
       filtered.sort((a, b) => {
-        if (this.sortBy === 'alpha') {
-          return a.displayHandle.localeCompare(b.displayHandle);
-        }
-        if (this.sortBy === 'recent') {
-          return (b.recentStamp - a.recentStamp) || a.displayHandle.localeCompare(b.displayHandle);
-        }
+        if (this.sortBy === 'alpha') return a.displayHandle.localeCompare(b.displayHandle);
+        if (this.sortBy === 'recent') return (b.recentStamp - a.recentStamp) || a.displayHandle.localeCompare(b.displayHandle);
         if (this.sortBy === 'matches') {
           const matchDiff = b.ruleHits.length - a.ruleHits.length;
           if (matchDiff !== 0) return matchDiff;
@@ -3892,7 +4467,7 @@
           if (swDiff !== 0) return swDiff;
           return (b.recentStamp - a.recentStamp) || a.displayHandle.localeCompare(b.displayHandle);
         }
-        const score = (x) => stageWeight(x.status) + (x.note.trim() ? 25 : 0) + (x.ruleHits.length * 5);
+        const score = (x) => stageWeight(x.status) + (x.isFriend ? 35 : 0) + (x.isFollowing ? 15 : 0) + (x.note.trim() ? 25 : 0) + (x.ruleHits.length * 5);
         const diff = score(b) - score(a);
         if (diff !== 0) return diff;
         if (b.recentStamp !== a.recentStamp) return b.recentStamp - a.recentStamp;
@@ -3918,13 +4493,9 @@
         card.className = 'card';
 
         const activeStage = entry.status ? STAGE_MAP[entry.status] : null;
-        if (activeStage) {
-          card.style.borderLeft = `4px solid ${activeStage.color}`;
-        } else if (entry.ruleHits.length > 0) {
-          card.style.borderLeft = `4px solid ${entry.ruleHits[0].color}`;
-        } else if (entry.excludedHits.length > 0) {
-          card.style.borderLeft = '4px solid #b91c1c';
-        }
+        if (activeStage) card.style.borderLeft = `4px solid ${activeStage.color}`;
+        else if (entry.ruleHits.length > 0) card.style.borderLeft = `4px solid ${entry.ruleHits[0].color}`;
+        else if (entry.excludedHits.length > 0) card.style.borderLeft = `4px solid ${PALETTE.stage.hidden.border}`;
 
         const top = document.createElement('div');
         top.className = 'card-top';
@@ -3937,7 +4508,7 @@
         link.href = entry.profileUrl;
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
-        link.textContent = `/${entry.displayHandle}`;
+        link.textContent = `/${escapeHtml(entry.displayHandle)}`;
         leftInfo.appendChild(link);
 
         const demoPill = createDemographicPill(entry.age, entry.gender, entry.genderRole, entry.location, entry.isManualGender, entry.genderCategory);
@@ -3949,20 +4520,34 @@
         const badges = document.createElement('div');
         badges.className = 'badges';
 
+        if (entry.isFriend) {
+          const b = document.createElement('span');
+          b.className = 'pill pill-group';
+          b.textContent = '★ Friend';
+          badges.appendChild(b);
+        } else if (entry.isFollowing) {
+          const b = document.createElement('span');
+          b.className = 'pill';
+          b.style.color = PALETTE.ui.follow;
+          b.style.borderColor = PALETTE.stage.messaged.border;
+          b.textContent = '✓ Following';
+          badges.appendChild(b);
+        }
+
         if (entry.relationships) {
           const b = document.createElement('span');
           b.className = 'pill';
-          b.style.color = '#d8b4fe';
-          b.style.borderColor = 'rgba(168,85,247,0.35)';
-          b.textContent = entry.relationships;
+          b.style.color = PALETTE.ui.cool;
+          b.style.borderColor = 'rgba(138, 184, 150, 0.35)';
+          b.textContent = escapeHtml(entry.relationships);
           badges.appendChild(b);
         }
 
         if (entry.lastContacted) {
           const b = document.createElement('span');
           b.className = 'pill';
-          b.style.color = entry.followUpDue ? '#fde047' : '#7dd3fc';
-          b.style.borderColor = entry.followUpDue ? '#ca8a04' : '#0369a1';
+          b.style.color = entry.followUpDue ? PALETTE.ui.warn : PALETTE.ui.follow;
+          b.style.borderColor = entry.followUpDue ? PALETTE.stage.shortlist.border : PALETTE.stage.messaged.border;
           b.textContent = entry.followUpDue
             ? `⏰ Contacted ${entry.lastContacted} (${entry.daysSinceContact}d ago)`
             : `Contacted ${entry.lastContacted}`;
@@ -3980,8 +4565,8 @@
           const limCount = entry.fetishesLimits.length;
           b.textContent = `${entry.hasAbout ? 'About ✓' : 'No About'}${entry.fetishesInto.length ? ' • Fetishes ✓' : ''}${limCount ? ` • Limits (${limCount})` : ''}`;
           if (entry.noAbout) {
-            b.style.color = '#fca5a5';
-            b.style.borderColor = '#7f1d1d';
+            b.style.color = PALETTE.ui.warn;
+            b.style.borderColor = PALETTE.stage.hidden.border;
           }
           badges.appendChild(b);
         }
@@ -3989,7 +4574,7 @@
         for (const g of entry.sharedGroups.slice(0, 3)) {
           const b = document.createElement('span');
           b.className = 'pill pill-group';
-          b.textContent = `🤝 ${g}`;
+          b.textContent = `🤝 ${escapeHtml(g)}`;
           badges.appendChild(b);
         }
 
@@ -4003,7 +4588,6 @@
         for (const c of entry.limitConflicts) {
           const b = document.createElement('span');
           b.className = 'pill pill-warn';
-          b.title = 'Extracted from main profile Limits';
           b.textContent = `⚠ Limit: ${c.keyword}`;
           badges.appendChild(b);
         }
@@ -4011,8 +4595,7 @@
         for (const kw of entry.excludedHits) {
           const b = document.createElement('span');
           b.className = 'pill pill-ex';
-          b.title = 'Red kink found in Fetishes (Into) list';
-          b.textContent = `-${kw}`;
+          b.textContent = `-${escapeHtml(kw)}`;
           badges.appendChild(b);
         }
 
@@ -4023,26 +4606,20 @@
 
         const genderSeg = document.createElement('div');
         genderSeg.className = 'gender-seg';
-        genderSeg.title = 'Set Gender Override';
 
         const genderOpts = [
           { val: null,     label: 'Auto',     activeCls: 'g-auto' },
           { val: 'female', label: '♀ Female', activeCls: 'g-female' },
           { val: 'male',   label: '♂ Male',   activeCls: 'g-male' },
-          { val: 'other',  label: '⚧ Other',  activeCls: 'g-other' }
+          { val: 'other',  label: ' transgender Other',  activeCls: 'g-other' }
         ];
         for (const gOpt of genderOpts) {
           const gBtn = document.createElement('button');
           gBtn.type = 'button';
           gBtn.textContent = gOpt.label;
-          if ((entry.manualGender || null) === gOpt.val) {
-            gBtn.className = gOpt.activeCls;
-          }
+          if ((entry.manualGender || null) === gOpt.val) gBtn.className = gOpt.activeCls;
           gBtn.addEventListener('click', () => {
-            Store.setUser(entry.key, {
-              username: entry.displayHandle,
-              manualGender: gOpt.val
-            });
+            Store.setUser(entry.key, { username: entry.displayHandle, manualGender: gOpt.val });
             this.refreshList();
           });
           genderSeg.appendChild(gBtn);
@@ -4062,10 +4639,7 @@
           }
           sBtn.textContent = st.short;
           sBtn.addEventListener('click', () => {
-            Store.setUser(entry.key, {
-              username: entry.displayHandle,
-              status: isCurrent ? null : st.id
-            });
+            Store.setUser(entry.key, { username: entry.displayHandle, status: isCurrent ? null : st.id });
             this.refreshList();
           });
           stageBar.appendChild(sBtn);
@@ -4075,7 +4649,6 @@
         delBtn.type = 'button';
         delBtn.className = 'stage-btn danger-ghost';
         delBtn.textContent = 'Delete';
-        delBtn.title = 'Remove this user from local CRM & cache';
         delBtn.addEventListener('click', () => {
           Store.deleteUserAndCache(entry.key);
           this.refreshList();
@@ -4088,7 +4661,7 @@
         if (entry.lookingFor) {
           const lfLine = document.createElement('div');
           lfLine.style.cssText = 'font-size:11px;color:#9ca3af;';
-          lfLine.textContent = `Looking for: ${entry.lookingFor}`;
+          lfLine.textContent = `Looking for: ${escapeHtml(entry.lookingFor)}`;
           card.appendChild(lfLine);
         }
 
@@ -4097,7 +4670,7 @@
 
         const noteArea = document.createElement('textarea');
         noteArea.className = 'note-area';
-        noteArea.placeholder = `Private notes for /${entry.displayHandle}...`;
+        noteArea.placeholder = `Private notes for /${escapeHtml(entry.displayHandle)}...`;
         noteArea.value = entry.note;
 
         const saveNoteBtn = document.createElement('button');
@@ -4106,17 +4679,11 @@
         const persistNote = () => {
           const trimmed = noteArea.value.trim();
           if (trimmed !== entry.note) {
-            Store.setUser(entry.key, {
-              username: entry.displayHandle,
-              note: trimmed
-            });
+            Store.setUser(entry.key, { username: entry.displayHandle, note: trimmed });
             entry.note = trimmed;
             saveNoteBtn.textContent = 'Saved ✓';
             saveNoteBtn.className = 'active-tab';
-            setTimeout(() => {
-              saveNoteBtn.textContent = 'Save Note';
-              saveNoteBtn.className = '';
-            }, 1500);
+            setTimeout(() => { saveNoteBtn.textContent = 'Save Note'; saveNoteBtn.className = ''; }, 1500);
           }
         };
         saveNoteBtn.addEventListener('click', persistNote);
@@ -4141,13 +4708,13 @@
           let activeSub = entry.aboutText ? 'about' : (entry.hasFetishes ? 'fetishes' : 'full');
 
           const renderCacheBody = () => {
-            subTabs.querySelectorAll('.sub-tab').forEach(btn => {
-              btn.classList.toggle('active', btn.dataset.tab === activeSub);
-            });
+            subTabs.querySelectorAll('.sub-tab').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === activeSub));
             bodyBox.innerHTML = '';
 
             if (activeSub === 'about') {
-              bodyBox.textContent = entry.aboutText || 'No About section written on this profile.';
+              bodyBox.textContent = entry.aboutText || (entry.status === 'hidden'
+                ? 'Bio prose stripped for Passed profile (demographics & limits retained).'
+                : 'No About section written on this profile.');
             } else if (activeSub === 'fetishes') {
               if (entry.fetishesInto.length > 0) {
                 const lbl = document.createElement('div');
@@ -4158,7 +4725,7 @@
                 for (const item of entry.fetishesInto) {
                   const chip = document.createElement('span');
                   chip.className = 'ftag-into';
-                  chip.textContent = item;
+                  chip.textContent = escapeHtml(item);
                   wrap.appendChild(chip);
                 }
                 bodyBox.append(lbl, wrap);
@@ -4172,7 +4739,7 @@
                 for (const item of entry.fetishesLimits) {
                   const chip = document.createElement('span');
                   chip.className = 'ftag-limit';
-                  chip.textContent = item;
+                  chip.textContent = escapeHtml(item);
                   wrap.appendChild(chip);
                 }
                 bodyBox.append(lbl, wrap);
@@ -4180,18 +4747,19 @@
               if (entry.fetishesInto.length === 0 && entry.fetishesLimits.length === 0) {
                 bodyBox.textContent = entry.fetishesText || 'No structured fetishes or profile limits cached yet.';
               }
+            } else if (activeSub === 'writings') {
+              bodyBox.textContent = entry.writingsText || 'No Writings or Lists cached for this profile.';
             } else if (activeSub === 'groups') {
-              bodyBox.textContent = entry.groups.length > 0
-                ? entry.groups.join('  •  ')
-                : 'No groups cached for this profile.';
+              bodyBox.textContent = entry.groups.length > 0 ? entry.groups.map(escapeHtml).join('  •  ') : 'No groups cached for this profile.';
             } else {
-              bodyBox.textContent = entry.fullText;
+              bodyBox.textContent = entry.fullText || 'No full-text cache stored.';
             }
           };
 
           const tabOptions = [
-            { id: 'about', label: 'About' },
-            ...(entry.hasFetishes ? [{ id: 'fetishes', label: `Fetishes & Profile Limits (${entry.fetishesLimits.length})` }] : []),
+            { id: 'about', label: `About${entry.aboutText ? ` (${entry.aboutText.length})` : ''}` },
+            ...(entry.hasFetishes ? [{ id: 'fetishes', label: `Fetishes & Limits (${entry.fetishesLimits.length})` }] : []),
+            ...(entry.writingsText ? [{ id: 'writings', label: 'Writings' }] : []),
             ...(entry.groups.length > 0 ? [{ id: 'groups', label: `Groups (${entry.groups.length})` }] : []),
             { id: 'full', label: 'Full Cache' }
           ];
@@ -4200,12 +4768,9 @@
             const tBtn = document.createElement('button');
             tBtn.type = 'button';
             tBtn.className = `sub-tab ${activeSub === opt.id ? 'active' : ''}`;
-            tBtn.dataset.tab = opt.id;
             tBtn.textContent = opt.label;
-            tBtn.addEventListener('click', () => {
-              activeSub = opt.id;
-              renderCacheBody();
-            });
+            tBtn.dataset.tab = opt.id;
+            tBtn.addEventListener('click', () => { activeSub = opt.id; renderCacheBody(); });
             subTabs.appendChild(tBtn);
           }
 
@@ -4224,7 +4789,7 @@
   };
 
   // =========================================================================
-  // 11. SHADOW DOM FLOATING HUD (WITH SELF-PROFILE SYNC & LIVE AGE FILTER)
+  // 11. SHADOW DOM FLOATING HUD (MULTI-SELECT GENDERS + PRESET PACK I/O)
   // =========================================================================
   const Hud = {
     shadow: null,
@@ -4233,6 +4798,8 @@
     countSpan: null,
     cacheSpan: null,
     viewModeBtn: null,
+    hideModeBtn: null,
+    batchOpenBtn: null,
     showHiddenBtn: null,
     pauseBtn: null,
     panel: null,
@@ -4283,9 +4850,7 @@
 
       const existing = document.getElementById('flx-hud-host');
       if (existing) {
-        if (existing.parentElement !== mountRoot) {
-          mountRoot.appendChild(existing);
-        }
+        if (existing.parentElement !== mountRoot) mountRoot.appendChild(existing);
         return;
       }
 
@@ -4308,19 +4873,19 @@
           .box {
             background: rgba(20, 20, 24, 0.96); backdrop-filter: blur(10px);
             border: 1px solid #383842; border-radius: 10px; padding: 8px 10px;
-            box-shadow: 0 8px 28px rgba(0,0,0,0.75); width: min(440px, calc(100vw - 32px)); max-height: 82vh; overflow-y: auto;
+            box-shadow: 0 8px 28px rgba(0,0,0,0.75); width: min(485px, calc(100vw - 32px)); max-height: 82vh; overflow-y: auto;
           }
           .box.collapsed { width: auto; overflow: visible; }
           .row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
           button {
             background: #232329; color: #e4e4e7; border: 1px solid #3f3f48; border-radius: 5px;
-            padding: 4px 8px; cursor: pointer; font-size: 11px; transition: background 0.15s, border-color 0.15s;
+            padding: 4px 8px; cursor: pointer; font-size: 11px;
           }
           button:hover { background: #303038; color: #fff; }
-          button.star { background: rgba(234, 179, 8, 0.18); border-color: #ca8a04; color: #fde047; font-weight: 600; }
-          button.sky { background: rgba(56, 189, 248, 0.16); border-color: #0284c7; color: #7dd3fc; font-weight: 600; }
-          button.danger { background: rgba(239, 68, 68, 0.18); border-color: #dc2626; color: #fca5a5; }
-          button.capturing { background: rgba(56, 189, 248, 0.22); border-color: #0284c7; color: #7dd3fc; font-weight: 600; }
+          button.star { background: rgba(212, 168, 67, 0.18); border-color: #9a7b2e; color: #fde047; font-weight: 600; }
+          button.sky { background: rgba(122, 163, 184, 0.16); border-color: #4a6b7d; color: #7dd3fc; font-weight: 600; }
+          button.danger { background: rgba(201, 122, 107, 0.18); border-color: #8b4f44; color: #fca5a5; }
+          button.capturing { background: rgba(122, 163, 184, 0.22); border-color: #4a6b7d; color: #7dd3fc; font-weight: 600; }
           .scan-pill {
             font-size: 11px; color: #a1a1aa; padding: 2px 7px; background: #1c1c22;
             border: 1px solid #303038; border-radius: 5px; max-width: 195px;
@@ -4333,6 +4898,7 @@
           }
           label { display: flex; flex-direction: column; gap: 3px; color: #a1a1aa; font-size: 11px; }
           .inline-label { flex-direction: row; align-items: center; gap: 6px; cursor: pointer; color: #d4d4d8; }
+          .gender-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
           input[type="text"], input[type="number"], select, textarea {
             background: #1d1d23; color: #f4f4f5; border: 1px solid #3e3e48; border-radius: 5px;
             padding: 4px 6px; font-size: 11px; font-family: inherit; width: 100%;
@@ -4357,6 +4923,8 @@
           <div class="row">
             <button type="button" id="btn-toggle">FL (<span id="card-count">0</span>) ▲</button>
             <button type="button" class="star" id="btn-crm">CRM</button>
+            <button type="button" id="btn-batch-open" title="Open up to 5 visible, un-filtered, un-cached profile cards in background tabs">Open Uncached</button>
+            <button type="button" id="btn-hide-mode" title="Toggle between removing (zero-height) or dimming filtered cards">Filtered: Removed</button>
             <button type="button" id="btn-view-mode" title="Cycle overlay view: Full / Compact / Minimal (V)">View: Full</button>
             <button type="button" id="btn-hidden"></button>
             <button type="button" id="btn-pause"></button>
@@ -4364,14 +4932,40 @@
           </div>
           <div class="panel" id="hud-panel" style="display:none;">
             <div class="section-box">
+              <div class="rules-header"><span>📦 Preset Pack Builder, Loader &amp; I/O (≤2 Words, Deduplicated)</span></div>
+              <div class="row">
+                <select id="in-pack-select" style="flex:1;"></select>
+                <button type="button" class="sky" id="btn-load-pack">Load Pack</button>
+                <button type="button" id="btn-import-pack">Import Pack .json</button>
+              </div>
+              <div class="row">
+                <input type="text" id="in-new-pack-name" placeholder="Pack name (e.g. My Sensory Pack)" style="flex:1;">
+                <button type="button" id="btn-save-pack">Save Pack</button>
+                <button type="button" id="btn-export-pack">Export Pack .json</button>
+              </div>
+            </div>
+
+            <div class="section-box">
               <div class="rules-header">
-                <span>👤 My Profile & Self-Kink Sync</span>
-                <button type="button" class="sky" id="btn-sync-self">↻ Sync From My Profile</button>
+                <span>👤 My Profile &amp; Smart Preference Learner</span>
+                <button type="button" class="sky" id="btn-learn-self">✨ Learn From My Profile</button>
               </div>
               <div id="self-profile-summary" style="font-size:11px;color:#9ca3af;"></div>
               <label class="inline-label">
-                <input type="checkbox" id="in-auto-sync-self"> Auto-sync my Fetishes (Into → Shared Kink, Profile Limits → Excludes) when visiting my profile
+                <input type="checkbox" id="in-auto-learn-self"> Auto-sync my Fetishes &amp; Limits when visiting my profile
               </label>
+            </div>
+
+            <div class="section-box">
+              <div class="rules-header">
+                <span>Show Genders (Toggle Any Combination)</span>
+              </div>
+              <div class="gender-grid">
+                <label class="inline-label"><input type="checkbox" id="in-g-female"> ♀ Cis Female</label>
+                <label class="inline-label"><input type="checkbox" id="in-g-male"> ♂ Cis Male</label>
+                <label class="inline-label"><input type="checkbox" id="in-g-other"> transgender Trans / Non-Binary / Other</label>
+                <label class="inline-label"><input type="checkbox" id="in-g-unknown"> ❓ Unspecified Gender</label>
+              </div>
             </div>
 
             <div class="section-box">
@@ -4394,23 +4988,31 @@
                 </label>
               </div>
               <div class="grid2">
-                <label>Filter Action
+                <label>Filtered Card Action
                   <select id="in-mode">
+                    <option value="remove">Remove From View (Layout-Safe)</option>
                     <option value="dim">Dim Card</option>
-                    <option value="collapse">Collapse Card</option>
                   </select>
                 </label>
-                <label>Gender Filter
-                  <select id="in-gender-filter">
-                    <option value="all">All Genders (No Filter)</option>
-                    <option value="female">♀ Female Only</option>
-                    <option value="male">♂ Male Only</option>
-                    <option value="other">⚧ NB / Trans / Other</option>
+                <label>Relationship Filter
+                  <select id="in-rel-filter">
+                    <option value="all">All Relationships</option>
+                    <option value="single">Single / Available Only</option>
+                    <option value="partnered">Partnered / Married Only</option>
                   </select>
                 </label>
               </div>
-              <label>Dim Opacity (<span id="opacity-val">18%</span>)
-                <input type="range" id="in-opacity" min="0.05" max="0.75" step="0.05">
+              <label class="inline-label">
+                <input type="checkbox" id="in-exempt-social"> ★ Always keep Friends, Following, Shortlisted, Interacted &amp; Noted profiles visible
+              </label>
+              <label class="inline-label">
+                <input type="checkbox" id="in-local-only"> 📍 Local Region Filter (hide profiles outside your Local Regions)
+              </label>
+              <label>Local Regions (comma-separated, e.g. portland, oregon, vancouver, wa)
+                <input type="text" id="in-local-regions" placeholder="portland, oregon, vancouver, wa">
+              </label>
+              <label class="inline-label">
+                <input type="checkbox" id="in-allow-explore-unknown"> Keep uncached Explore tiles visible when location isn't shown on card (prevents scroll loop)
               </label>
               <div class="grid3">
                 <label class="inline-label" style="padding-bottom:4px;">
@@ -4423,8 +5025,19 @@
                   <input type="number" id="in-max-age" min="18" max="99">
                 </label>
               </div>
-              <label>Cache Retention (Days)
-                <input type="number" id="in-ttl" min="1" max="90">
+              <div class="grid2">
+                <label>Dim Opacity (<span id="opacity-val">18%</span>)
+                  <input type="range" id="in-opacity" min="0.05" max="0.75" step="0.05">
+                </label>
+                <label>Cache Retention (Days)
+                  <input type="number" id="in-ttl" min="1" max="90">
+                </label>
+              </div>
+              <label class="inline-label">
+                <input type="checkbox" id="in-cache-match"> Only auto-cache profiles matching active display filters
+              </label>
+              <label class="inline-label">
+                <input type="checkbox" id="in-chat-strip"> Show compact CRM bar in Inbox &amp; Chat Dock
               </label>
               <label class="inline-label">
                 <input type="checkbox" id="in-sticky-profile"> Pin profile bar to top while scrolling
@@ -4439,15 +5052,12 @@
 
             <div class="section-box">
               <div class="rules-header">
-                <span>Content Color Categories</span>
-                <div class="row">
-                  <button type="button" id="btn-reset-rules" title="Load full profile-tuned categories & excludes">Reset Defaults</button>
-                  <button type="button" id="btn-add-rule">+ Add</button>
-                </div>
+                <span>Content Color Categories (≤2 Words per Term)</span>
+                <button type="button" id="btn-add-rule">+ Add Category</button>
               </div>
               <div id="rules-list"></div>
-              <label style="margin-top:4px;">Red Kinks / Excludes (Fetishes "Into" list only — ignores About & Limits)
-                <input type="text" id="in-exclude">
+              <label style="margin-top:4px;">Excludes (≤2 Words per Term, Deduplicated)
+                <input type="text" id="in-exclude" placeholder="comma-separated terms (max 2 words each)...">
               </label>
             </div>
 
@@ -4456,7 +5066,7 @@
                 <span>Outreach Templates ({username})</span>
                 <div class="row">
                   <button type="button" id="btn-reset-tpls">Reset</button>
-                  <button type="button" id="btn-add-tpl">+ Add</button>
+                  <button type="button" id="btn-add-tpl">+ Add Template</button>
                 </div>
               </div>
               <div id="tpls-list"></div>
@@ -4475,15 +5085,19 @@
 
             <div class="section-box">
               <div class="rules-header">
-                <span>Local Storage & Backups</span>
+                <span>Local Storage & File Backups</span>
                 <span id="storage-size" style="font-weight:normal;color:#9ca3af;">0 KB</span>
               </div>
               <div class="row">
                 <button type="button" class="star" id="btn-save" style="flex:1;">Save All Settings</button>
-                <button type="button" id="btn-prune-cache" title="Delete expired cache entries for untracked profiles">Prune Expired</button>
-                <button type="button" id="btn-clear-cache" title="Wipe entire local profile cache">Clear Cache</button>
-                <button type="button" id="btn-export" title="Copy JSON backup">Export</button>
-                <button type="button" id="btn-import" title="Paste JSON backup">Import</button>
+                <button type="button" id="btn-purge-excluded">Purge Non-Matching Cache</button>
+                <button type="button" id="btn-slim-storage">Slim Storage</button>
+              </div>
+              <div class="row">
+                <button type="button" id="btn-prune-cache">Prune Expired</button>
+                <button type="button" id="btn-clear-cache">Clear Cache</button>
+                <button type="button" id="btn-export" style="flex:1;">Download .json</button>
+                <button type="button" id="btn-import" style="flex:1;">Load .json</button>
               </div>
             </div>
             <div class="status" id="hud-status"></div>
@@ -4500,12 +5114,27 @@
       this.countSpan = $('card-count');
       this.cacheSpan = $('cache-status');
       this.viewModeBtn = $('btn-view-mode');
+      this.hideModeBtn = $('btn-hide-mode');
+      this.batchOpenBtn = $('btn-batch-open');
       this.showHiddenBtn = $('btn-hidden');
       this.pauseBtn = $('btn-pause');
 
+      const refreshPackDropdown = () => {
+        const sel = $('in-pack-select');
+        if (!sel) return;
+        sel.innerHTML = '';
+        for (const pack of Object.values(Store.getAllAvailablePacks())) {
+          const opt = document.createElement('option');
+          opt.value = pack.id;
+          opt.textContent = escapeHtml(pack.name);
+          opt.title = escapeHtml(pack.description || '');
+          sel.appendChild(opt);
+        }
+      };
+
       const refreshStorageLabel = () => {
         const stats = Store.getStorageStats();
-        $('storage-size').textContent = `${stats.kb} KB (${stats.cacheCount} cached, ${stats.userCount} CRM)`;
+        $('storage-size').textContent = `${stats.kb} KB [${stats.backend}] (${stats.cacheCount} cached, ${stats.userCount} CRM)`;
       };
 
       const refreshSelfSummary = () => {
@@ -4514,20 +5143,18 @@
         const handleLabel = displayUsername || selfProf.username || selfUsername || (selfId ? `User #${selfId}` : 'Not detected yet');
         const intoCount = (selfProf.fetishesInto || []).length;
         const limCount = (selfProf.fetishesLimits || []).length;
-        const grpCount = (selfProf.groups || []).length;
         $('self-profile-summary').textContent =
-          `Detected: /${handleLabel} • ${intoCount} Into kinks • ${limCount} Profile Limits • ${grpCount} Groups (visit your profile to refresh)`;
+          `/${escapeHtml(handleLabel)} • ${escapeHtml(selfProf.orientation || 'Orientation?')} • ${escapeHtml(selfProf.location || 'Location?')} • ${intoCount} Into • ${limCount} Limits`;
       };
 
-      const addRuleRow = (rule = { label: 'New Tag', color: '#f472b6', keywords: [] }) => {
+      const addRuleRow = (rule = { label: 'New Tag', color: PALETTE.ui.accent, keywords: [] }) => {
         const row = document.createElement('div');
         row.className = 'rule-row';
         row.dataset.ruleId = rule.id || `custom_${Date.now()}`;
 
         const colorInput = document.createElement('input');
         colorInput.type = 'color';
-        colorInput.value = rule.color || '#38bdf8';
-        colorInput.title = 'Pick category color';
+        colorInput.value = rule.color || PALETTE.ui.accent;
 
         const labelInput = document.createElement('input');
         labelInput.type = 'text';
@@ -4538,14 +5165,13 @@
         const kwInput = document.createElement('input');
         kwInput.type = 'text';
         kwInput.className = 'rule-kws';
-        kwInput.placeholder = 'keyword1, keyword2';
+        kwInput.placeholder = 'term1, term2 (≤2 words)';
         kwInput.value = Array.isArray(rule.keywords) ? rule.keywords.join(', ') : '';
 
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
         delBtn.className = 'rule-del';
         delBtn.textContent = '×';
-        delBtn.title = 'Remove category';
         delBtn.addEventListener('click', () => row.remove());
 
         row.append(colorInput, labelInput, kwInput, delBtn);
@@ -4570,7 +5196,6 @@
         delBtn.type = 'button';
         delBtn.className = 'rule-del';
         delBtn.textContent = '×';
-        delBtn.title = 'Remove template';
         delBtn.addEventListener('click', () => card.remove());
 
         const bodyIn = document.createElement('textarea');
@@ -4638,16 +5263,29 @@
         this.draftKeybinds = Object.assign({}, s.keybinds);
         this.capturingKeyAction = null;
 
-        $('in-auto-sync-self').checked = Boolean(s.autoSyncSelfKinks);
+        refreshPackDropdown();
+        $('in-auto-learn-self').checked = Boolean(s.autoLearnFromSelf);
+        $('in-g-female').checked = s.allowedGenders.female !== false;
+        $('in-g-male').checked = s.allowedGenders.male !== false;
+        $('in-g-other').checked = s.allowedGenders.other !== false;
+        $('in-g-unknown').checked = s.allowedGenders.unknown !== false;
+
         $('in-pos').value = s.hudPosition;
         $('in-view-mode').value = s.cardViewMode || 'full';
         $('in-mode').value = s.hideMode;
-        $('in-gender-filter').value = s.genderFilter || 'all';
+        $('in-rel-filter').value = s.relationshipFilter || 'all';
+        $('in-exempt-social').checked = Boolean(s.exemptInteractedAndSocial);
+        $('in-local-only').checked = Boolean(s.localOnlyFilter);
+        $('in-local-regions').value = (s.localRegions || []).join(', ');
+        $('in-allow-explore-unknown').checked = Boolean(s.allowUnknownLocationOnExplore);
+        $('in-cache-match').checked = Boolean(s.cacheMatchDisplayFilters);
+
         $('in-opacity').value = s.dimOpacity;
         $('opacity-val').textContent = `${Math.round(s.dimOpacity * 100)}%`;
         $('in-age-filter').checked = Boolean(s.filterByAge);
         $('in-min-age').value = s.minAge;
         $('in-max-age').value = s.maxAge;
+        $('in-chat-strip').checked = Boolean(s.enableChatStrip);
         $('in-sticky-profile').checked = Boolean(s.stickyProfileBar);
         $('in-ttl').value = s.bioCacheTtlDays;
         $('in-notes').checked = Boolean(s.showNotesInline);
@@ -4666,79 +5304,134 @@
         refreshStorageLabel();
       };
 
-      $('btn-sync-self').addEventListener('click', () => {
+      $('btn-load-pack').addEventListener('click', () => {
+        const packId = $('in-pack-select').value;
+        const res = Store.applyPresetPack(packId);
+        syncFormFromStore();
+        runAll();
+        $('hud-status').textContent = `✓ Loaded +${res.rulesAdded} rule terms, +${res.excludesAdded} excludes (${res.duplicatesSkipped} duplicates skipped)`;
+        setTimeout(() => { $('hud-status').textContent = ''; }, 3500);
+      });
+
+      $('btn-import-pack').addEventListener('click', () => {
+        promptJsonFileUpload((rawText, fileName) => {
+          try {
+            const imported = Store.sanitizeAndStoreImportedPack(rawText);
+            refreshPackDropdown();
+            $('in-pack-select').value = imported.id;
+            $('hud-status').textContent = `✓ Imported pack "${escapeHtml(imported.name)}" from ${escapeHtml(fileName)} (≤2 words, deduplicated)`;
+            setTimeout(() => { $('hud-status').textContent = ''; }, 3500);
+          } catch (err) {
+            $('hud-status').textContent = `✕ Invalid pack JSON: ${err.message}`;
+          }
+        });
+      });
+
+      $('btn-save-pack').addEventListener('click', () => {
+        const packName = $('in-new-pack-name').value.trim() || 'Custom Pack';
+        const created = Store.buildPackFromCurrentSettings(packName);
+        const s = Store.getSettings();
+        Store.saveSettings({ customPacks: [...(s.customPacks || []), created] });
+        $('in-new-pack-name').value = '';
+        refreshPackDropdown();
+        $('in-pack-select').value = created.id;
+        $('hud-status').textContent = `✓ Saved preset pack "${escapeHtml(created.name)}"`;
+        setTimeout(() => { $('hud-status').textContent = ''; }, 3000);
+      });
+
+      $('btn-export-pack').addEventListener('click', () => {
+        const packName = $('in-new-pack-name').value.trim() || 'FetLife-Filter-Pack';
+        const packObj = Store.buildPackFromCurrentSettings(packName);
+        downloadTextFile(`${packObj.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.json`, JSON.stringify(packObj, null, 2));
+        $('hud-status').textContent = `✓ Exported "${escapeHtml(packObj.name)}" (.json)`;
+        setTimeout(() => { $('hud-status').textContent = ''; }, 3000);
+      });
+
+      $('btn-learn-self').addEventListener('click', () => {
         const selfProf = Store.getSelfProfile();
-        if ((selfProf.fetishesInto || []).length === 0 && (selfProf.fetishesLimits || []).length === 0) {
+        if (!selfProf.orientation && !selfProf.location && (selfProf.fetishesInto || []).length === 0) {
           const { displayUsername, selfUsername } = getSelfIdentity();
           const h = displayUsername || selfUsername;
           if (h) {
             openProfileInBackgroundTab(`${window.location.origin}/${h}`);
-            $('hud-status').textContent = `Opened /${h} in a new tab—scroll through your profile to cache kinks & limits`;
+            $('hud-status').textContent = `Opened /${h} — visit it once so the script can learn your orientation, region, kinks & limits`;
           } else {
-            $('hud-status').textContent = 'Visit your own FetLife profile page once to capture your kinks & limits';
+            $('hud-status').textContent = 'Visit your own FetLife profile page once to capture your preferences';
           }
-          setTimeout(() => { $('hud-status').textContent = ''; }, 3500);
+          setTimeout(() => { $('hud-status').textContent = ''; }, 4000);
           return;
         }
-        const res = Store.syncSelfKinksToRules(selfProf);
+        const res = Store.learnPreferencesFromSelf(selfProf, true);
         syncFormFromStore();
         runAll();
-        $('hud-status').textContent = `✓ Synced ${res.intoAdded} Shared Kinks & ${res.limitsAdded} Profile Limits`;
+        $('hud-status').textContent = `✓ Learned preferences (${res.intoAdded} Shared Kinks, ${res.limitsAdded} Limits)`;
         setTimeout(() => { $('hud-status').textContent = ''; }, 3000);
       });
 
-      const applyLiveDemographicControls = () => {
-        const minVal = normalizeValidAge($('in-min-age').value) ?? 30;
-        const maxVal = normalizeValidAge($('in-max-age').value) ?? 45;
+      const applyLiveControls = () => {
+        const minVal = normalizeValidAge($('in-min-age').value) ?? 21;
+        const maxVal = normalizeValidAge($('in-max-age').value) ?? 65;
+        const regions = $('in-local-regions').value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+
         Store.saveSettings({
+          allowedGenders: {
+            female: $('in-g-female').checked,
+            male: $('in-g-male').checked,
+            other: $('in-g-other').checked,
+            unknown: $('in-g-unknown').checked
+          },
           filterByAge: $('in-age-filter').checked,
           minAge: Math.min(minVal, maxVal),
           maxAge: Math.max(minVal, maxVal),
-          genderFilter: $('in-gender-filter').value,
+          exemptInteractedAndSocial: $('in-exempt-social').checked,
+          relationshipFilter: $('in-rel-filter').value,
+          localOnlyFilter: $('in-local-only').checked,
+          localRegions: regions,
+          allowUnknownLocationOnExplore: $('in-allow-explore-unknown').checked,
+          cacheMatchDisplayFilters: $('in-cache-match').checked,
+          enableChatStrip: $('in-chat-strip').checked,
           hideMode: $('in-mode').value
         });
+        this.syncQuickButtons();
         Array.from(document.getElementsByClassName('flx-profile-bar')).forEach(el => el.remove());
         runAll();
       };
 
-      $('in-age-filter').addEventListener('change', applyLiveDemographicControls);
-      $('in-min-age').addEventListener('change', applyLiveDemographicControls);
-      $('in-max-age').addEventListener('change', applyLiveDemographicControls);
-      $('in-gender-filter').addEventListener('change', applyLiveDemographicControls);
-      $('in-mode').addEventListener('change', applyLiveDemographicControls);
+      ['in-g-female', 'in-g-male', 'in-g-other', 'in-g-unknown', 'in-age-filter', 'in-min-age', 'in-max-age',
+       'in-exempt-social', 'in-rel-filter', 'in-local-only', 'in-local-regions', 'in-allow-explore-unknown',
+       'in-cache-match', 'in-chat-strip', 'in-mode'].forEach(id => {
+        $(id).addEventListener('change', applyLiveControls);
+      });
 
       $('btn-crm').addEventListener('click', () => {
         if (CrmModal.isOpen) CrmModal.close();
         else CrmModal.open();
       });
 
+      this.batchOpenBtn.addEventListener('click', () => BatchOpener.start(5, 2500));
       this.viewModeBtn.addEventListener('click', () => this.cycleGlobalCardView());
+      this.hideModeBtn.addEventListener('click', () => {
+        const s = Store.getSettings();
+        const nextMode = s.hideMode === 'remove' ? 'dim' : 'remove';
+        Store.saveSettings({ hideMode: nextMode });
+        if (this.expanded && this.shadow) {
+          const modeSel = this.shadow.getElementById('in-mode');
+          if (modeSel) modeSel.value = nextMode;
+        }
+        this.syncQuickButtons();
+        runAll();
+        CardNavigator.showToast(nextMode === 'remove' ? 'Filtered cards: Removed from view' : 'Filtered cards: Dimmed');
+      });
 
       $('btn-add-rule').addEventListener('click', () => addRuleRow());
       $('btn-add-tpl').addEventListener('click', () => addTemplateRow());
-
-      $('btn-reset-rules').addEventListener('click', () => {
-        Store.resetRulesToDefaults();
-        syncFormFromStore();
-        Array.from(document.getElementsByClassName('flx-profile-bar')).forEach(el => el.remove());
-        runAll();
-        $('hud-status').textContent = '✓ Loaded profile-tuned categories & excludes';
-        setTimeout(() => { $('hud-status').textContent = ''; }, 2500);
-      });
-
       $('btn-reset-tpls').addEventListener('click', () => {
-        Store.resetTemplatesToDefaults();
+        Store.saveSettings({ messageTemplates: JSON.parse(JSON.stringify(DEFAULT_MESSAGE_TEMPLATES)) });
         syncFormFromStore();
-        runAll();
-        $('hud-status').textContent = '✓ Restored default outreach templates';
-        setTimeout(() => { $('hud-status').textContent = ''; }, 2500);
       });
-
       $('btn-reset-keys').addEventListener('click', () => {
         Store.resetKeybindsToDefaults();
         syncFormFromStore();
-        $('hud-status').textContent = '✓ Restored default keybinds';
-        setTimeout(() => { $('hud-status').textContent = ''; }, 2500);
       });
 
       $('in-opacity').addEventListener('input', (e) => {
@@ -4769,56 +5462,60 @@
       });
 
       $('btn-save').addEventListener('click', () => {
+        const seenTerms = new Set();
+        let dupesFound = 0;
         const collectedRules = [];
+
         rulesList.querySelectorAll('.rule-row').forEach((row, idx) => {
-          const color = row.querySelector('input[type="color"]').value;
-          const label = row.querySelector('.rule-label').value.trim() || `Tag ${idx + 1}`;
-          const keywords = row.querySelector('.rule-kws').value
-            .split(',')
-            .map(x => x.trim())
-            .filter(Boolean);
-          if (keywords.length > 0) {
-            collectedRules.push({
-              id: row.dataset.ruleId || `rule_${idx}`,
-              label,
-              color,
-              keywords
-            });
+          const rawTokens = row.querySelector('.rule-kws').value.split(',').map(x => x.trim()).filter(Boolean);
+          const { unique, duplicates } = deduplicateTerms(rawTokens, seenTerms);
+          dupesFound += duplicates.length;
+          if (unique.length > 0) {
+            collectedRules.push({ id: row.dataset.ruleId || `rule_${idx}`, label: row.querySelector('.rule-label').value.trim() || `Tag ${idx + 1}`, color: row.querySelector('input[type="color"]').value, keywords: unique });
           }
         });
+
+        const rawExcludes = $('in-exclude').value.split(',').map(x => x.trim()).filter(Boolean);
+        const { unique: cleanExcludes, duplicates: exDupes } = deduplicateTerms(rawExcludes, seenTerms);
+        dupesFound += exDupes.length;
 
         const collectedTpls = [];
         tplsList.querySelectorAll('.tpl-card').forEach((card, idx) => {
           const title = card.querySelector('input[type="text"]').value.trim() || `Template ${idx + 1}`;
           const body = card.querySelector('textarea').value.trim();
           if (body.length > 0) {
-            collectedTpls.push({
-              id: card.dataset.tplId || `tpl_${idx}`,
-              title,
-              body
-            });
+            collectedTpls.push({ id: card.dataset.tplId || `tpl_${idx}`, title, body });
           }
         });
 
-        const nextKeybinds = Object.assign({}, this.draftKeybinds, {
-          navEnabled: $('in-kb-nav').checked
-        });
-
-        const rawMin = normalizeValidAge($('in-min-age').value) ?? 30;
-        const rawMax = normalizeValidAge($('in-max-age').value) ?? 45;
+        const nextKeybinds = Object.assign({}, this.draftKeybinds, { navEnabled: $('in-kb-nav').checked });
+        const rawMin = normalizeValidAge($('in-min-age').value) ?? 21;
+        const rawMax = normalizeValidAge($('in-max-age').value) ?? 65;
+        const regions = $('in-local-regions').value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 
         cardViewOverrides.clear();
         const next = Store.saveSettings({
-          autoSyncSelfKinks: $('in-auto-sync-self').checked,
+          autoLearnFromSelf: $('in-auto-learn-self').checked,
+          allowedGenders: {
+            female: $('in-g-female').checked,
+            male: $('in-g-male').checked,
+            other: $('in-g-other').checked,
+            unknown: $('in-g-unknown').checked
+          },
           hudPosition: $('in-pos').value,
           cardViewMode: $('in-view-mode').value,
-          cardToolbarPosition: 'bottom',
           hideMode: $('in-mode').value,
-          genderFilter: $('in-gender-filter').value,
+          exemptInteractedAndSocial: $('in-exempt-social').checked,
+          relationshipFilter: $('in-rel-filter').value,
+          localOnlyFilter: $('in-local-only').checked,
+          localRegions: regions,
+          allowUnknownLocationOnExplore: $('in-allow-explore-unknown').checked,
+          cacheMatchDisplayFilters: $('in-cache-match').checked,
           dimOpacity: parseFloat($('in-opacity').value) || 0.18,
           filterByAge: $('in-age-filter').checked,
           minAge: Math.min(rawMin, rawMax),
           maxAge: Math.max(rawMin, rawMax),
+          enableChatStrip: $('in-chat-strip').checked,
           stickyProfileBar: $('in-sticky-profile').checked,
           bioCacheTtlDays: Math.max(1, parseInt($('in-ttl').value, 10) || 14),
           showNotesInline: $('in-notes').checked,
@@ -4826,16 +5523,32 @@
           highlightRules: collectedRules,
           messageTemplates: collectedTpls,
           keybinds: nextKeybinds,
-          excludeKeywords: $('in-exclude').value.split(',').map(x => x.trim()).filter(Boolean)
+          excludeKeywords: cleanExcludes
         });
 
         this.applyPosition(next.hudPosition);
         this.syncQuickButtons();
+        syncFormFromStore();
         Array.from(document.getElementsByClassName('flx-profile-bar')).forEach(el => el.remove());
         runAll();
         refreshStorageLabel();
-        $('hud-status').textContent = '✓ Saved UI, overlay mode, filters & keybinds';
-        setTimeout(() => { $('hud-status').textContent = ''; }, 2500);
+        $('hud-status').textContent = `✓ Saved (≤2 words enforced, ${dupesFound} duplicates removed)`;
+        setTimeout(() => { $('hud-status').textContent = ''; }, 3000);
+      });
+
+      $('btn-purge-excluded').addEventListener('click', () => {
+        const res = Store.purgeExcludedFromCache();
+        refreshStorageLabel();
+        runAll();
+        $('hud-status').textContent = `✓ Purged ${res.removedCache} cached & ${res.removedUsers} un-noted excluded records`;
+        setTimeout(() => { $('hud-status').textContent = ''; }, 3500);
+      });
+
+      $('btn-slim-storage').addEventListener('click', () => {
+        const count = Store.compactAllStorage();
+        refreshStorageLabel();
+        $('hud-status').textContent = `✓ Deduplicated ${count} cached entries & stripped Passed prose`;
+        setTimeout(() => { $('hud-status').textContent = ''; }, 3000);
       });
 
       $('btn-prune-cache').addEventListener('click', () => {
@@ -4843,7 +5556,7 @@
         Array.from(document.getElementsByClassName('flx-profile-bar')).forEach(el => el.remove());
         runAll();
         refreshStorageLabel();
-        $('hud-status').textContent = `✓ Pruned ${res.pruned} expired entries (${res.retainedTracked} tracked kept)`;
+        $('hud-status').textContent = `✓ Pruned ${res.pruned} expired entries (${res.retainedTracked} active tracked kept)`;
         setTimeout(() => { $('hud-status').textContent = ''; }, 3000);
       });
 
@@ -4857,30 +5570,26 @@
       });
 
       $('btn-export').addEventListener('click', () => {
-        const dump = Store.exportAll();
-        if (navigator.clipboard) {
-          navigator.clipboard.writeText(dump).then(() => {
-            $('hud-status').textContent = '✓ JSON backup copied to clipboard';
-          }).catch(() => window.prompt('Copy your JSON backup:', dump));
-        } else {
-          window.prompt('Copy your JSON backup:', dump);
-        }
+        const today = new Date().toISOString().slice(0, 10);
+        downloadTextFile(`FetLife-CRM-Backup-${today}.json`, Store.exportAll(), 'application/json');
+        $('hud-status').textContent = `✓ Downloaded FetLife-CRM-Backup-${today}.json`;
+        setTimeout(() => { $('hud-status').textContent = ''; }, 3000);
       });
 
       $('btn-import').addEventListener('click', () => {
-        const raw = window.prompt('Paste previously exported JSON backup:');
-        if (!raw) return;
-        try {
-          Store.importAll(raw);
-          syncFormFromStore();
-          this.applyPosition(Store.getSettings().hudPosition);
-          this.syncQuickButtons();
-          Array.from(document.getElementsByClassName('flx-profile-bar')).forEach(el => el.remove());
-          runAll();
-          $('hud-status').textContent = '✓ Backup restored';
-        } catch (err) {
-          $('hud-status').textContent = `✕ Invalid JSON: ${err.message}`;
-        }
+        promptJsonFileUpload((rawText, fileName) => {
+          try {
+            Store.importAll(rawText);
+            syncFormFromStore();
+            this.applyPosition(Store.getSettings().hudPosition);
+            this.syncQuickButtons();
+            Array.from(document.getElementsByClassName('flx-profile-bar')).forEach(el => el.remove());
+            runAll();
+            $('hud-status').textContent = `✓ Restored backup from ${escapeHtml(fileName)}`;
+          } catch (err) {
+            $('hud-status').textContent = `✕ Invalid JSON file: ${err.message}`;
+          }
+        });
       });
 
       this.syncQuickButtons();
@@ -4891,25 +5600,34 @@
       const s = Store.getSettings();
       const mode = s.cardViewMode || 'full';
 
+      if (this.batchOpenBtn) {
+        if (BatchOpener.isRunning()) {
+          this.batchOpenBtn.className = 'danger';
+          this.batchOpenBtn.textContent = `Stop (${BatchOpener.remaining.length} left)`;
+        } else {
+          const uncachedCount = BatchOpener.getUncachedCandidateCards().length;
+          this.batchOpenBtn.className = uncachedCount > 0 ? 'sky' : '';
+          this.batchOpenBtn.textContent = uncachedCount > 0
+            ? `Open Uncached (${Math.min(5, uncachedCount)}/${uncachedCount})`
+            : 'Open Uncached (0)';
+        }
+      }
+
+      if (this.hideModeBtn) {
+        const isRemove = s.hideMode === 'remove';
+        this.hideModeBtn.className = isRemove ? 'star' : '';
+        this.hideModeBtn.textContent = isRemove ? 'Filtered: Removed' : 'Filtered: Dimmed';
+      }
+
       if (this.viewModeBtn) {
         this.viewModeBtn.className = mode === 'minimal' ? 'sky' : (mode === 'compact' ? 'star' : '');
         this.viewModeBtn.textContent = VIEW_MODE_LABELS[mode] || 'View: Full';
-        this.viewModeBtn.title = `Cycle global overlay view (${s.keybinds?.cycleView || 'v'})`;
       }
 
       this.showHiddenBtn.className = s.showHidden ? 'star' : '';
       this.showHiddenBtn.textContent = s.showHidden ? 'Showing Passed' : 'Passed Filtered';
       this.pauseBtn.className = s.paused ? 'danger' : '';
       this.pauseBtn.textContent = s.paused ? 'Paused' : 'Active';
-
-      const toggleBtn = this.shadow?.getElementById('btn-toggle');
-      if (toggleBtn && s.keybinds?.toggleCrm) {
-        toggleBtn.title = `Toggle Settings (${s.keybinds.toggleCrm} opens CRM)`;
-      }
-      const crmBtn = this.shadow?.getElementById('btn-crm');
-      if (crmBtn) {
-        crmBtn.title = `Open Local CRM Dashboard (${s.keybinds?.toggleCrm || 'Alt+C'})`;
-      }
     },
 
     updateCount(count) {
@@ -4928,9 +5646,10 @@
   };
 
   // =========================================================================
-  // 12. SAFE OBSERVER, REMAPPABLE KEYBOARD LISTENER & NAVIGATION HOOKS
+  // 12. DEBOUNCED, SCOPED OBSERVER & KEYBOARD LISTENER (LOW CPU)
   // =========================================================================
   let debounceTimer = null;
+  let lastRunAt = 0;
 
   const observer = new MutationObserver((mutations) => {
     for (const m of mutations) {
@@ -4947,8 +5666,9 @@
   });
 
   function startObserver() {
-    if (document.body) {
-      observer.observe(document.body, { childList: true, subtree: true });
+    const target = document.getElementById('main-content') || document.body;
+    if (target) {
+      observer.observe(target, { childList: true, subtree: true });
     }
   }
 
@@ -4962,28 +5682,45 @@
   }
 
   function runAll() {
+    lastRunAt = Date.now();
     withObserverPaused(() => {
       Store.runOneTimeSanitization();
       syncStickyViewportOffset();
       attachScrollListeners();
       Hud.init();
-      Hud.syncQuickButtons();
       const settings = Store.getSettings();
       if (settings.paused) {
+        Hud.syncQuickButtons();
         Hud.updateCount(0);
         return;
       }
       const profilePage = enhanceProfilePage();
       const count = enhancePostsAndCards();
       enhanceChatContext();
+      Hud.syncQuickButtons();
       Hud.updateCount(count);
       Hud.updateCacheStatus(profilePage);
     });
   }
 
   function scheduleRun() {
+    if (debounceTimer) return;
+    const elapsed = Date.now() - lastRunAt;
+    const delay = elapsed < 450 ? 450 - elapsed : 250;
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      runAll();
+    }, delay);
+  }
+
+  function cleanup() {
+    observer.disconnect();
     clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(runAll, 300);
+    clearTimeout(scrollIdleTimer);
+    if (stickyRafPending) cancelAnimationFrame(syncStickyViewportOffset);
+    if (BatchOpener.timer) clearTimeout(BatchOpener.timer);
+    if (CardNavigator.toastEl) CardNavigator.toastEl.remove();
+    if (CardNavigator.toastTimer) clearTimeout(CardNavigator.toastTimer);
   }
 
   document.addEventListener('keydown', (e) => {
@@ -4991,7 +5728,6 @@
 
     const editing = isEditableTarget(e);
     const hasModifier = e.altKey || e.ctrlKey || e.metaKey;
-
     if (editing && !hasModifier) return;
 
     const settings = Store.getSettings();
@@ -5042,9 +5778,3 @@
       CardNavigator.actOnFocused('openTab');
     }
   });
-
-  runAll();
-  document.addEventListener('turbo:load', scheduleRun);
-  document.addEventListener('turbo:render', scheduleRun);
-  window.addEventListener('popstate', scheduleRun);
-})();
