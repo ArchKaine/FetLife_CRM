@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FetLife Local Cache Filter & CRM
 // @namespace    local.fl.enhancer
-// @version      1.17.2
+// @version      1.17.1
 // @description  High-performance passive profile caching, infinite-scroll loop protection, neutral-by-default multi-select gender/location/relationship filters, built-in fetish/lifestyle lexicon, 2-word max term filter, duplicate entry detector, preset pack save/load/import/export, smart self-profile preference learner, Friends/Follows/CRM visibility protection, throttled batch tab opener, and searchable CRM modal
 // @match        https://fetlife.com/*
 // @match        https://*.fetlife.com/*
@@ -15,49 +15,14 @@
   'use strict';
 
   // =========================================================================
-  // 0. UTILITIES & EARTH-TONE PALETTE
-  // =========================================================================
-  function escapeHtml(str) {
-    return String(str || '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
-  }
-
-  const PALETTE = {
-    stage: {
-      shortlist: { color: '#d4a843', bg: 'rgba(212, 168, 67, 0.12)', border: '#9a7b2e' },
-      messaged:  { color: '#7aa3b8', bg: 'rgba(122, 163, 184, 0.12)', border: '#4a6b7d' },
-      talking:   { color: '#8ab896', bg: 'rgba(138, 184, 150, 0.12)', border: '#5a7d62' },
-      met:       { color: '#b89cc8', bg: 'rgba(184, 156, 200, 0.12)', border: '#7d6a8a' },
-      hidden:    { color: '#c97a6b', bg: 'rgba(201, 122, 107, 0.12)', border: '#8b4f44' }
-    },
-    ui: {
-      accent: '#7aa3b8',
-      warm: '#d4a843',
-      cool: '#8ab896',
-      muted: '#a89d8f',
-      friend: '#8ab896',
-      follow: '#7aa3b8',
-      note: '#d4a843',
-      warn: '#c97a6b',
-      danger: '#c97a6b',
-      text: { primary: '#e8e4dc', secondary: '#b8b0a0', muted: '#888070' },
-      surface: { bg: '#1a1a18', border: '#3a3a34', hover: '#2a2a26', input: '#232321' }
-    }
-  };
-
-  // =========================================================================
   // 1. NEUTRAL-FIRST DEFAULTS, LEXICON, PRESET PACKS, STAGES & KEYBINDS
   // =========================================================================
   const PIPELINE_STAGES = [
-    { id: 'shortlist', label: 'Shortlisted', short: '★ Shortlist', icon: '★', ...PALETTE.stage.shortlist },
-    { id: 'messaged',  label: 'Messaged',    short: '✉ Messaged',  icon: '✉', ...PALETTE.stage.messaged },
-    { id: 'talking',   label: 'Talking',     short: '💬 Talking',   icon: '💬', ...PALETTE.stage.talking },
-    { id: 'met',       label: 'Met IRL',     short: '☕ Met IRL',   icon: '☕', ...PALETTE.stage.met },
-    { id: 'hidden',    label: 'Passed',      short: '✕ Pass',      icon: '✕', ...PALETTE.stage.hidden }
+    { id: 'shortlist', label: 'Shortlisted', short: '★ Shortlist', icon: '★', color: '#fbbf24', bg: 'rgba(251, 191, 36, 0.16)', border: '#b45309' },
+    { id: 'messaged',  label: 'Messaged',    short: '✉ Messaged',  icon: '✉', color: '#38bdf8', bg: 'rgba(56, 189, 248, 0.16)', border: '#0369a1' },
+    { id: 'talking',   label: 'Talking',     short: '💬 Talking',   icon: '💬', color: '#34d399', bg: 'rgba(52, 211, 153, 0.16)', border: '#047857' },
+    { id: 'met',       label: 'Met IRL',     short: '☕ Met IRL',   icon: '☕', color: '#c084fc', bg: 'rgba(192, 132, 252, 0.16)', border: '#7e22ce' },
+    { id: 'hidden',    label: 'Passed',      short: '✕ Pass',      icon: '✕', color: '#f87171', bg: 'rgba(248, 113, 113, 0.16)', border: '#b91c1c' }
   ];
 
   const STAGE_MAP = Object.fromEntries(PIPELINE_STAGES.map(s => [s.id, s]));
@@ -101,7 +66,7 @@
         {
           id: 'pack_sensory',
           label: 'Sensory Play',
-          color: PALETTE.ui.cool,
+          color: '#a855f7',
           keywords: ['sensation', 'edging', 'violet wand', 'estim', 'e-stim', 'leather', 'voyeur', 'switch']
         }
       ],
@@ -118,13 +83,13 @@
         {
           id: 'pack_rel',
           label: 'Relationship / Family',
-          color: PALETTE.ui.warm,
+          color: '#f59e0b',
           keywords: ['polyamorous', 'polyfidelity', 'closed vee', 'co-parenting', 'nesting', 'solo poly']
         },
         {
           id: 'pack_sober_nd',
           label: 'Sober / Neurotype',
-          color: PALETTE.ui.cool,
+          color: '#10b981',
           keywords: ['sober', 'straight edge', 'alcohol-free', 'nudist', 'nude yoga', 'neurodivergent', 'low-masking', 'direct']
         }
       ],
@@ -173,7 +138,7 @@
     { key: 'toggleMinimal', label: 'Toggle Focused Overlay Minimal' },
     { key: 'shortlist',     label: 'Shortlist Focused Card' },
     { key: 'pass',          label: 'Pass / Hide Focused Card' },
-    { key: 'cycleGender',   label: 'Cycle Gender (♀/♂//auto)' },
+    { key: 'cycleGender',   label: 'Cycle Gender (♀/♂/⚧/Auto)' },
     { key: 'note',          label: 'Edit Note on Card' },
     { key: 'openTab',       label: 'Open Profile in New Tab' }
   ];
@@ -313,7 +278,6 @@
   const PARTNERED_REL_RE = /\b(married|partnered|engaged|in\s+a\s+relationship|polyamorous|poly|swinger|open\s+relationship|monogamous|nested|nesting|spouse|husband|wife|boyfriend|girlfriend|fianc[eé]e?|coupled)\b/i;
   const USERNAME_RE = /^[a-zA-Z0-9_.-]{2,36}$/;
 
-  // Gender token pattern (used only for testing, not in a giant alternation regex)
   const GENDER_TOKEN_PATTERN = [
     'Cisgender\\s*Female', 'Cisgender\\s*Woman', 'Cisgender\\s*Male', 'Cisgender\\s*Man',
     'Cis\\s*Female', 'Cis\\s*Woman', 'Cis\\s*Male', 'Cis\\s*Man', 'Cis\\s*F', 'Cis\\s*M',
@@ -328,10 +292,15 @@
     'W', 'F', 'M'
   ].join('|');
 
-  // Split into two passes to avoid catastrophic backtracking on long alternation
-  const GENDER_TOKEN_RE = new RegExp(`(${GENDER_TOKEN_PATTERN})`, 'i');
-  const AGE_GENDER_BADGE_RE = /^\s*([1-9]\d)\s+([^·•|\r\n]{1,48})\s*$/;
-  const AGE_GENDER_INLINE_RE = /(?:^|[\s·•|(]|[a-z_.-])([1-9]\d)\s+([A-Za-z][A-Za-z0-9 /&'’-]{0,38})/;
+  const DEMO_BADGE_START_RE = new RegExp(
+    `^\\s*([1-9]\\d)\\s*(${GENDER_TOKEN_PATTERN})(?![a-zA-Z0-9_])(?:\\s+([^·•|\\r\\n]{1,48}))?\\s*$`,
+    'i'
+  );
+
+  const DEMO_INLINE_SCAN_RE = new RegExp(
+    `(?:^|[\\s·•|(]|[a-z_.-])([1-9]\\d)\\s*(${GENDER_TOKEN_PATTERN})(?![a-zA-Z0-9_])(?:[ \\t]+([A-Za-z0-9][A-Za-z0-9 /&'’-]{0,38}))?`,
+    'i'
+  );
 
   const OTHER_GENDER_RE = /\b(nb|non-?binary|mtf|ftm|trans\s*woman|trans\s*female|trans\s*girl|trans\s*man|trans\s*male|transfeminine|transmasculine|transgender|transsexual|trans\b|gf|genderfluid|gq|genderqueer|ag|agender|is|intersex|cd|crossdresser|tv|transvestite|two-?spirit|2s|demigirl|demiboy|bigender|pangender|genderflux|androgyne|gn|amab|afab)\b/i;
   const BIO_NON_CIS_FEMALE_RE = /\b(mtf|trans\s*woman|trans\s*female|transfeminine|transgender\s*woman|amab|non-?binary|genderfluid)\b/i;
@@ -395,28 +364,10 @@
     return n;
   }
 
-  function extractAgeGenderFromText(text) {
-    if (!text) return { age: null, genderToken: null, genderRole: null };
-    const lines = text.split(/[·•|\r\n]/).map(s => s.trim()).filter(Boolean);
-    for (const line of lines) {
-      const badgeMatch = line.match(AGE_GENDER_BADGE_RE);
-      if (badgeMatch) {
-        const age = normalizeValidAge(badgeMatch[1]);
-        const genderToken = badgeMatch[2].trim();
-        if (age && GENDER_TOKEN_RE.test(genderToken)) {
-          return { age, genderToken, genderRole: line };
-        }
-      }
-      const inlineMatch = line.match(AGE_GENDER_INLINE_RE);
-      if (inlineMatch) {
-        const age = normalizeValidAge(inlineMatch[1]);
-        const genderToken = inlineMatch[2].trim();
-        if (age && GENDER_TOKEN_RE.test(genderToken)) {
-          return { age, genderToken, genderRole: `${age} ${genderToken}` };
-        }
-      }
-    }
-    return { age: null, genderToken: null, genderRole: null };
+  function extractAgeFromRoleString(roleStr) {
+    if (!roleStr || typeof roleStr !== 'string') return null;
+    const m = roleStr.trim().match(DEMO_BADGE_START_RE) || roleStr.trim().match(DEMO_INLINE_SCAN_RE);
+    return m ? normalizeValidAge(m[1]) : null;
   }
 
   function resolveEffectiveAge(record, cachedBio, liveDemos = null) {
@@ -424,7 +375,7 @@
       normalizeValidAge(liveDemos?.age) ??
       normalizeValidAge(cachedBio?.age) ??
       normalizeValidAge(record?.age) ??
-      extractAgeGenderFromText(liveDemos?.genderRole || cachedBio?.genderRole || record?.genderRole || '').age;
+      extractAgeFromRoleString(liveDemos?.genderRole || cachedBio?.genderRole || record?.genderRole || '');
   }
 
   function classifyGenderToken(rawToken, explicitRowText = '') {
@@ -463,9 +414,9 @@
     }
 
     const roleStr = liveDemos?.genderRole || cachedBio?.genderRole || record?.genderRole || '';
-    const extracted = extractAgeGenderFromText(roleStr);
-    if (extracted.genderToken) {
-      return classifyGenderToken(extracted.genderToken, liveDemos?.gender || cachedBio?.gender || '');
+    const m = roleStr.match(DEMO_BADGE_START_RE) || roleStr.match(DEMO_INLINE_SCAN_RE);
+    if (m && m[2]) {
+      return classifyGenderToken(m[2], liveDemos?.gender || cachedBio?.gender || '');
     }
 
     const rawG = liveDemos?.gender || cachedBio?.gender || (!record?.manualGender ? record?.gender : '');
@@ -486,7 +437,7 @@
       return { gender: '♂ Male (Manual)', genderCategory: 'male', isManual: true, manualGender: 'male', autoDetected: auto };
     }
     if (record?.manualGender === 'other') {
-      return { gender: ' transgender Other (Manual)', genderCategory: 'other', isManual: true, manualGender: 'other', autoDetected: auto };
+      return { gender: '⚧ Other (Manual)', genderCategory: 'other', isManual: true, manualGender: 'other', autoDetected: auto };
     }
     return { gender: auto.gender, genderCategory: auto.genderCategory, isManual: false, manualGender: null, autoDetected: auto };
   }
@@ -515,9 +466,6 @@
       if (loc.includes('washington') || /\bvancouver,\s*wa\b/.test(loc)) {
         return wantsWa;
       }
-      // If user has both WA and BC regions, and location is just "vancouver" without state,
-      // default to BC (more specific) - or return true if either matches
-      return wantsWa || wantsBc;
     }
 
     return regions.some(term => {
@@ -783,7 +731,7 @@
           cleanRules.push({
             id: r.id || `rule_${Date.now()}`,
             label: (r.label || 'Tag').trim(),
-            color: r.color || PALETTE.ui.accent,
+            color: r.color || '#38bdf8',
             keywords: unique
           });
         }
@@ -810,7 +758,7 @@
           cleanRules.push({
             id: r.id || `imp_${Date.now()}_${cleanRules.length}`,
             label: (r.label || 'Tag').trim(),
-            color: r.color || PALETTE.ui.accent,
+            color: r.color || '#a855f7',
             keywords: unique
           });
         }
@@ -862,7 +810,7 @@
         if (unique.length > 0) {
           const existingIdx = nextRules.findIndex(r => normalizeTermKey(r.label) === normalizeTermKey(pRule.label));
           if (existingIdx >= 0) nextRules[existingIdx].keywords = [...nextRules[existingIdx].keywords, ...unique];
-          else nextRules.push({ id: pRule.id || `pack_${Date.now()}_${rulesAdded}`, label: pRule.label, color: pRule.color || PALETTE.ui.accent, keywords: unique });
+          else nextRules.push({ id: pRule.id || `pack_${Date.now()}_${rulesAdded}`, label: pRule.label, color: pRule.color || '#a855f7', keywords: unique });
           rulesAdded += unique.length;
         }
       }
@@ -1105,7 +1053,7 @@
       let intoAdded = 0;
       if (cleanKinks.length > 0) {
         const idx = rules.findIndex(r => r.id === 'self_kinks');
-        const selfRule = { id: 'self_kinks', label: 'Shared Kink', color: PALETTE.ui.warm, keywords: cleanKinks };
+        const selfRule = { id: 'self_kinks', label: 'Shared Kink', color: '#ec4899', keywords: cleanKinks };
         if (idx >= 0) rules[idx] = selfRule;
         else rules.push(selfRule);
         intoAdded = cleanKinks.length;
@@ -1233,9 +1181,8 @@
         } else if (patch.manualGender === 'other') {
           next.manualGender = 'other';
           next.genderCategory = 'other';
-          next.gender = ' transgender Other (Manual)';
+          next.gender = '⚧ Other (Manual)';
         } else {
-          // Explicit null or undefined → reset to auto-detect
           next.manualGender = null;
           const cached = this.getBioCache()[key] || null;
           const auto = inferAutoGender({}, cached);
@@ -1250,7 +1197,7 @@
         next.gender = '♂ Male (Manual)';
       } else if (next.manualGender === 'other') {
         next.genderCategory = 'other';
-        next.gender = ' transgender Other (Manual)';
+        next.gender = '⚧ Other (Manual)';
       }
 
       db[key] = next;
@@ -1449,7 +1396,7 @@
     },
     exportAll() {
       return JSON.stringify({
-        version: '1.17.2',
+        version: '1.17.1',
         exportedAt: new Date().toISOString(),
         settings: this.getSettings(),
         users: this.getAllUsers(),
@@ -1475,12 +1422,12 @@
   // 5. SELF-IDENTITY DETECTOR, SCOPED DEMOGRAPHIC PARSER & DOM HELPERS
   // =========================================================================
   function hexToRgba(hex, alpha) {
-    const clean = (hex || PALETTE.ui.accent).replace('#', '').trim();
+    const clean = (hex || '#38bdf8').replace('#', '').trim();
     const full = clean.length === 3
       ? clean.split('').map(c => c + c).join('')
       : clean.padEnd(6, '0').slice(0, 6);
     const num = parseInt(full, 16);
-    if (Number.isNaN(num)) return `rgba(122, 163, 184, ${alpha})`;
+    if (Number.isNaN(num)) return `rgba(56, 189, 248, ${alpha})`;
     const r = (num >> 16) & 255;
     const g = (num >> 8) & 255;
     const b = num & 255;
@@ -1745,16 +1692,37 @@
       const subParts = rawSeg.split(/\r?\n|·|•|\|/).map(s => s.trim()).filter(Boolean);
       for (const seg of subParts) {
         if (!isLikelyDemoBadgeString(seg)) continue;
-        const extracted = extractAgeGenderFromText(seg);
-        if (extracted.age !== null && extracted.genderToken) {
-          age = extracted.age;
-          rawGenderToken = extracted.genderToken;
-          genderRole = extracted.genderRole;
+        const m = seg.match(DEMO_BADGE_START_RE);
+        if (m && age === null) {
+          const parsedAge = normalizeValidAge(m[1]);
+          const gTok = m[2] || null;
+          if (parsedAge !== null && gTok) {
+            age = parsedAge;
+            rawGenderToken = gTok;
+            genderRole = seg;
+          }
         }
         if (locationParts.length === 0) {
           const locMatch = seg.match(GENERIC_LOCATION_TEXT_RE);
           if (locMatch && locMatch[1]) {
             locationParts.push(locMatch[1].trim());
+          }
+        }
+      }
+    }
+
+    if (age === null) {
+      for (const rawSeg of candidateStrings) {
+        if (!isLikelyDemoBadgeString(rawSeg)) continue;
+        const m = rawSeg.match(DEMO_INLINE_SCAN_RE);
+        if (m) {
+          const parsedAge = normalizeValidAge(m[1]);
+          if (parsedAge !== null && m[2]) {
+            age = parsedAge;
+            rawGenderToken = m[2];
+            const rolePart = (m[3] || '').trim();
+            genderRole = [`${parsedAge}${rawGenderToken}`, rolePart].filter(Boolean).join(' ');
+            break;
           }
         }
       }
@@ -2111,7 +2079,7 @@
           continue;
         }
 
-        const isBulletOrShortItem = /^[-•*▪▫‧‒>]/.test(line) || line.length <= 85;
+        const isBulletOrShortItem = /^[-•*▪▫‣⁃–—>]/.test(line) || line.length <= 85;
         if (isBulletOrShortItem) {
           splitAndAddClause(line);
           listLinesCaptured++;
@@ -2145,7 +2113,7 @@
       }
       if (inLimitBlock) {
         if (NEXT_SECTION_HEADING_RE.test(line) || (line.endsWith(':') && line.length < 36)) {
-          inLimitBlock = false;
+          inLimitListBlock = false;
         } else {
           continue;
         }
@@ -2382,7 +2350,7 @@
         hits.push({
           id: rule.id || rule.label,
           label: rule.label || 'Match',
-          color: rule.color || PALETTE.ui.accent,
+          color: rule.color || '#38bdf8',
           keyword: matchedKw,
           fromCache
         });
@@ -2491,14 +2459,14 @@
     const pill = document.createElement('span');
     if (isManualGender) {
       if (genderCategory === 'male') {
-        pill.style.cssText = `font-size:11px;color:${PALETTE.ui.accent};background:rgba(122, 163, 184, 0.16);border:1px solid rgba(122, 163, 184, 0.38);padding:1px 6px;border-radius:4px;font-weight:500;`;
+        pill.style.cssText = 'font-size:11px;color:#93c5fd;background:rgba(59,130,246,0.16);border:1px solid rgba(59,130,246,0.38);padding:1px 6px;border-radius:4px;font-weight:500;';
       } else if (genderCategory === 'other') {
-        pill.style.cssText = `font-size:11px;color:${PALETTE.ui.cool};background:rgba(138, 184, 150, 0.16);border:1px solid rgba(138, 184, 150, 0.38);padding:1px 6px;border-radius:4px;font-weight:500;`;
+        pill.style.cssText = 'font-size:11px;color:#d8b4fe;background:rgba(168,85,247,0.16);border:1px solid rgba(168,85,247,0.38);padding:1px 6px;border-radius:4px;font-weight:500;';
       } else {
-        pill.style.cssText = `font-size:11px;color:${PALETTE.ui.warm};background:rgba(212, 168, 67, 0.14);border:1px solid rgba(212, 168, 67, 0.35);padding:1px 6px;border-radius:4px;font-weight:500;`;
+        pill.style.cssText = 'font-size:11px;color:#f9a8d4;background:rgba(244,114,182,0.14);border:1px solid rgba(244,114,182,0.35);padding:1px 6px;border-radius:4px;font-weight:500;';
       }
     } else {
-      pill.style.cssText = `font-size:11px;color:${PALETTE.ui.text.secondary};background:rgba(148, 163, 184, 0.12);border:1px solid rgba(148, 163, 184, 0.25);padding:1px 6px;border-radius:4px;font-weight:500;`;
+      pill.style.cssText = 'font-size:11px;color:#cbd5e1;background:rgba(148,163,184,0.12);border:1px solid rgba(148,163,184,0.25);padding:1px 6px;border-radius:4px;font-weight:500;';
     }
     pill.textContent = summary;
     return pill;
@@ -2509,25 +2477,25 @@
     const mg = record.manualGender || '';
 
     if (mg === 'female') {
-      sel.style.cssText = `background:rgba(212, 168, 67, 0.18);color:${PALETTE.ui.warm};border:1px solid #9a7b2e;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;font-weight:600;`;
+      sel.style.cssText = 'background:rgba(244,114,182,0.18);color:#f9a8d4;border:1px solid #db2777;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;font-weight:600;';
     } else if (mg === 'male') {
-      sel.style.cssText = `background:rgba(122, 163, 184, 0.18);color:${PALETTE.ui.accent};border:1px solid #4a6b7d;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;font-weight:600;`;
+      sel.style.cssText = 'background:rgba(59,130,246,0.18);color:#93c5fd;border:1px solid #2563eb;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;font-weight:600;';
     } else if (mg === 'other') {
-      sel.style.cssText = `background:rgba(138, 184, 150, 0.18);color:${PALETTE.ui.cool};border:1px solid #5a7d62;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;font-weight:600;`;
+      sel.style.cssText = 'background:rgba(168,85,247,0.18);color:#d8b4fe;border:1px solid #7e22ce;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;font-weight:600;';
     } else {
-      sel.style.cssText = `background:#202024;color:${PALETTE.ui.text.muted};border:1px solid #3f3f46;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;`;
+      sel.style.cssText = 'background:#202024;color:#a1a1aa;border:1px solid #3f3f46;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;';
     }
 
     sel.title = 'Override Gender';
 
     const cat = autoGenderObj?.genderCategory;
-    const autoHint = cat === 'female' ? '♀' : (cat === 'male' ? '♂' : (cat === 'other' ? ' transgender' : '?'));
+    const autoHint = cat === 'female' ? '♀' : (cat === 'male' ? '♂' : (cat === 'other' ? '⚧' : '?'));
 
     const opts = [
-      { val: '',       text: compact ? `G:${autoHint}` : `Gender: Auto (${autoHint})`, color: PALETTE.ui.text.primary },
-      { val: 'female', text: compact ? '♀ F' : '♀ Female',                             color: PALETTE.ui.warm },
-      { val: 'male',   text: compact ? '♂ M' : '♂ Male',                               color: PALETTE.ui.accent },
-      { val: 'other',  text: compact ? ' transgender Oth' : ' transgender Other',                            color: PALETTE.ui.cool }
+      { val: '',       text: compact ? `G:${autoHint}` : `Gender: Auto (${autoHint})`, color: '#e4e4e7' },
+      { val: 'female', text: compact ? '♀ F' : '♀ Female',                             color: '#f9a8d4' },
+      { val: 'male',   text: compact ? '♂ M' : '♂ Male',                               color: '#93c5fd' },
+      { val: 'other',  text: compact ? '⚧ Oth' : '⚧ Other',                            color: '#d8b4fe' }
     ];
 
     for (const o of opts) {
@@ -2656,15 +2624,15 @@
     };
 
     const baseBtnStyle = isMinimal
-      ? `background:#202024;color:${PALETTE.ui.text.secondary};border:1px solid #3f3f46;border-radius:4px;padding:1px 5px;cursor:pointer;font-size:10px;line-height:1.35;`
-      : `background:#202024;color:${PALETTE.ui.text.secondary};border:1px solid #3f3f46;border-radius:5px;padding:1px 6px;cursor:pointer;font-size:11px;line-height:1.4;`;
+      ? 'background:#202024;color:#d4d4d8;border:1px solid #3f3f46;border-radius:4px;padding:1px 5px;cursor:pointer;font-size:10px;line-height:1.35;'
+      : 'background:#202024;color:#d4d4d8;border:1px solid #3f3f46;border-radius:5px;padding:1px 6px;cursor:pointer;font-size:11px;line-height:1.4;';
 
     if (!isProfileBar && !isInlineRow && typeof onToggleCardView === 'function') {
       const viewToggleBtn = document.createElement('button');
       viewToggleBtn.type = 'button';
       viewToggleBtn.style.cssText = isMinimal
-        ? `${baseBtnStyle}background:rgba(122, 163, 184, 0.14);border-color:#4a6b7d;color:${PALETTE.ui.accent};font-weight:700;`
-        : `${baseBtnStyle}color:${PALETTE.ui.text.muted};`;
+        ? `${baseBtnStyle}background:rgba(56,189,248,0.14);border-color:#0284c7;color:#7dd3fc;font-weight:700;`
+        : `${baseBtnStyle}color:#9ca3af;`;
       viewToggleBtn.textContent = isMinimal ? '▸' : '▾';
       viewToggleBtn.title = isMinimal ? 'Expand overlay to Full view (M)' : 'Condense overlay to Minimal strip (M)';
       viewToggleBtn.addEventListener('click', (e) => { stopNav(e); onToggleCardView(); });
@@ -2674,7 +2642,7 @@
     const isStarred = record.status === 'shortlist';
     const starBtn = document.createElement('button');
     starBtn.type = 'button';
-    starBtn.style.cssText = isStarred ? `${baseBtnStyle}background:rgba(212, 168, 67, 0.18);border-color:#9a7b2e;color:${PALETTE.ui.warm};font-weight:600;` : baseBtnStyle;
+    starBtn.style.cssText = isStarred ? `${baseBtnStyle}background:rgba(251,191,36,0.18);border-color:#d97706;color:#fde047;font-weight:600;` : baseBtnStyle;
     starBtn.textContent = compactControls ? (isStarred ? '★' : '☆') : (isStarred ? '★ Shortlisted' : '☆ Shortlist');
     starBtn.title = 'Toggle Shortlist';
     starBtn.addEventListener('click', (e) => { stopNav(e); persistMeta({ status: isStarred ? null : 'shortlist' }); });
@@ -2683,14 +2651,14 @@
     const activeStage = record.status ? STAGE_MAP[record.status] : null;
     stageSelect.style.cssText = activeStage
       ? `background:${activeStage.bg};color:${activeStage.color};border:1px solid ${activeStage.border};border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;font-weight:600;`
-      : `background:#202024;color:${PALETTE.ui.text.muted};border:1px solid #3f3f46;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;`;
+      : 'background:#202024;color:#a1a1aa;border:1px solid #3f3f46;border-radius:5px;padding:1px 4px;font-size:10px;cursor:pointer;';
     stageSelect.title = 'Vetting Pipeline Stage';
 
     const noneOpt = document.createElement('option');
     noneOpt.value = '';
     noneOpt.textContent = compactControls ? 'Stage…' : 'Stage: None';
     noneOpt.style.background = '#18181b';
-    noneOpt.style.color = PALETTE.ui.text.primary;
+    noneOpt.style.color = '#e4e4e7';
     stageSelect.appendChild(noneOpt);
 
     for (const st of PIPELINE_STAGES) {
@@ -2718,8 +2686,8 @@
     ageBtn.type = 'button';
     const ageOut = isAgeOutOfRange(curAge, settings);
     ageBtn.style.cssText = ageOut
-      ? `${baseBtnStyle}background:rgba(201, 122, 107, 0.16);border-color:#8b4f44;color:${PALETTE.ui.warn};font-weight:600;`
-      : (curAge !== null ? `${baseBtnStyle}color:${PALETTE.ui.text.secondary};` : `${baseBtnStyle}color:${PALETTE.ui.text.muted};`);
+      ? `${baseBtnStyle}background:rgba(239,68,68,0.16);border-color:#b91c1c;color:#fca5a5;font-weight:600;`
+      : (curAge !== null ? `${baseBtnStyle}color:#cbd5e1;` : `${baseBtnStyle}color:#71717a;`);
     ageBtn.textContent = curAge !== null ? `${curAge}y` : 'Age?';
     ageBtn.title = 'Click to set or override age (18-99), or leave blank to reset to auto';
     ageBtn.addEventListener('click', (e) => {
@@ -2736,7 +2704,7 @@
     const isPassed = record.status === 'hidden';
     const passBtn = document.createElement('button');
     passBtn.type = 'button';
-    passBtn.style.cssText = isPassed ? `${baseBtnStyle}background:rgba(201, 122, 107, 0.18);border-color:#8b4f44;color:${PALETTE.ui.warn};font-weight:600;` : baseBtnStyle;
+    passBtn.style.cssText = isPassed ? `${baseBtnStyle}background:rgba(248,113,113,0.18);border-color:#dc2626;color:#fca5a5;font-weight:600;` : baseBtnStyle;
     passBtn.textContent = compactControls ? '✕' : (isPassed ? '✕ Passed' : '✕ Pass');
     passBtn.title = 'Pass / Hide Profile';
     passBtn.addEventListener('click', (e) => { stopNav(e); persistMeta({ status: isPassed ? null : 'hidden' }); });
@@ -2744,7 +2712,7 @@
     const noteBtn = document.createElement('button');
     noteBtn.type = 'button';
     noteBtn.style.cssText = record.note
-      ? `${baseBtnStyle}background:rgba(212, 168, 55, 0.15);border-color:#9a7b2e;color:${PALETTE.ui.note};`
+      ? `${baseBtnStyle}background:rgba(212,175,55,0.15);border-color:#b45309;color:#fcd34d;`
       : baseBtnStyle;
     noteBtn.textContent = compactControls ? '✎' : (record.note ? '✎ Edit Note' : '✎ Note');
     noteBtn.title = record.note ? `Private Note: ${record.note}` : 'Edit Private Note';
@@ -2764,24 +2732,24 @@
     if (!isInlineRow && (isProfileBar || viewMode === 'full')) {
       if (record.isFriend) {
         const fBadge = document.createElement('span');
-        fBadge.style.cssText = `font-size:10px;color:${PALETTE.ui.friend};padding:1px 5px;background:rgba(138, 184, 150, 0.14);border:1px solid rgba(138, 184, 150, 0.35);border-radius:4px;font-weight:600;`;
+        fBadge.style.cssText = 'font-size:10px;color:#6ee7b7;padding:1px 5px;background:rgba(16,185,129,0.14);border:1px solid rgba(16,185,129,0.35);border-radius:4px;font-weight:600;';
         fBadge.textContent = '★ Friend';
         bar.appendChild(fBadge);
       } else if (record.isFollowing) {
         const folBadge = document.createElement('span');
-        folBadge.style.cssText = `font-size:10px;color:${PALETTE.ui.follow};padding:1px 5px;background:rgba(122, 163, 184, 0.12);border:1px solid rgba(122, 163, 184, 0.3);border-radius:4px;`;
+        folBadge.style.cssText = 'font-size:10px;color:#7dd3fc;padding:1px 5px;background:rgba(56,189,248,0.12);border:1px solid rgba(56,189,248,0.3);border-radius:4px;';
         folBadge.textContent = '✓ Following';
         bar.appendChild(folBadge);
       }
 
       if (record.lastContacted && record.status !== 'hidden') {
         const contacted = document.createElement('span');
-        contacted.style.cssText = `font-size:10px;color:${PALETTE.ui.follow};padding:1px 5px;background:rgba(122, 163, 184, 0.1);border:1px solid rgba(122, 163, 184, 0.28);border-radius:4px;`;
+        contacted.style.cssText = 'font-size:10px;color:#7dd3fc;padding:1px 5px;background:rgba(56,189,248,0.1);border:1px solid rgba(56,189,248,0.28);border-radius:4px;';
         contacted.textContent = `Contacted ${record.lastContacted}`;
         bar.appendChild(contacted);
       } else if (record.lastSeen && record.status !== 'hidden') {
         const seen = document.createElement('span');
-        seen.style.cssText = `font-size:10px;color:${PALETTE.ui.text.muted};padding:1px 5px;border:1px solid #333;border-radius:4px;`;
+        seen.style.cssText = 'font-size:10px;color:#9ca3af;padding:1px 5px;border:1px solid #333;border-radius:4px;';
         seen.textContent = `Viewed ${record.lastSeen}`;
         bar.appendChild(seen);
       }
@@ -2808,14 +2776,14 @@
 
     if (demos?.relationships) {
       const relPill = document.createElement('span');
-      relPill.style.cssText = `font-size:10px;color:${PALETTE.ui.cool};background:rgba(138, 184, 150, 0.12);border:1px solid rgba(138, 184, 150, 0.28);padding:1px 5px;border-radius:4px;`;
+      relPill.style.cssText = 'font-size:10px;color:#d8b4fe;background:rgba(168,85,247,0.12);border:1px solid rgba(168,85,247,0.28);padding:1px 5px;border-radius:4px;';
       relPill.textContent = demos.relationships;
       toolbar.appendChild(relPill);
     }
 
     if (cachedBio) {
       const bioBadge = document.createElement('span');
-      bioBadge.style.cssText = `font-size:10px;color:${PALETTE.ui.text.muted};padding:1px 5px;border:1px solid #333;border-radius:4px;`;
+      bioBadge.style.cssText = 'font-size:10px;color:#9ca3af;padding:1px 5px;border:1px solid #333;border-radius:4px;';
       const hasFetishes = Boolean(cachedBio.fetishesInto && cachedBio.fetishesInto.length > 0);
       const limitCount = (cachedBio.fetishesLimits || []).length;
       bioBadge.textContent = `${cachedBio.hasAbout ? 'About ✓' : 'No About'}${hasFetishes ? ' • Fetishes ✓' : ''}${limitCount ? ` • Limits (${limitCount})` : ''}`;
@@ -2824,35 +2792,35 @@
 
     if (genderRejected) {
       const b = document.createElement('span');
-      b.style.cssText = `font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(201, 122, 107, 0.16);color:${PALETTE.ui.warn};border:1px solid #8b4f44;`;
+      b.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
       b.textContent = `-Gender${demos?.gender ? ` (${demos.gender})` : ' (Unknown)'}`;
       toolbar.appendChild(b);
     }
 
     if (nonLocalRejected) {
       const b = document.createElement('span');
-      b.style.cssText = `font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(201, 122, 107, 0.16);color:${PALETTE.ui.warn};border:1px solid #8b4f44;`;
+      b.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
       b.textContent = `-Non-Local${demos?.location ? ` (${demos.location})` : ''}`;
       toolbar.appendChild(b);
     }
 
     if (relRejected) {
       const b = document.createElement('span');
-      b.style.cssText = `font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(201, 122, 107, 0.16);color:${PALETTE.ui.warn};border:1px solid #8b4f44;`;
+      b.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
       b.textContent = `-Rel${demos?.relationships ? ` (${demos.relationships})` : ''}`;
       toolbar.appendChild(b);
     }
 
     if (missingAbout) {
       const b = document.createElement('span');
-      b.style.cssText = `font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(201, 122, 107, 0.16);color:${PALETTE.ui.warn};border:1px solid #8b4f44;`;
+      b.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
       b.textContent = '-No About';
       toolbar.appendChild(b);
     }
 
     if (ageRejected) {
       const b = document.createElement('span');
-      b.style.cssText = `font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(201, 122, 107, 0.16);color:${PALETTE.ui.warn};border:1px solid #8b4f44;`;
+      b.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
       b.textContent = `-Age (${demos.age})`;
       toolbar.appendChild(b);
     }
@@ -2866,14 +2834,14 @@
 
     limitConflicts.forEach((conf) => {
       const badge = document.createElement('span');
-      badge.style.cssText = `font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(201, 122, 107, 0.18);color:${PALETTE.ui.warn};border:1px solid #9a7b2e;font-weight:500;`;
+      badge.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(245,158,11,0.18);color:#fcd34d;border:1px solid #d97706;font-weight:500;';
       badge.textContent = `⚠ Limit: ${conf.keyword}`;
       toolbar.appendChild(badge);
     });
 
     excludedHits.forEach((kw) => {
       const badge = document.createElement('span');
-      badge.style.cssText = `font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(201, 122, 107, 0.16);color:${PALETTE.ui.warn};border:1px solid #8b4f44;`;
+      badge.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(239,68,68,0.16);color:#fca5a5;border:1px solid #b91c1c;';
       badge.textContent = `-${kw}`;
       toolbar.appendChild(badge);
     });
@@ -3015,7 +2983,7 @@
       const target = cards[clamped];
       target.dataset.flxPrevShadow = target.style.boxShadow || '';
       target.classList.add('flx-kbd-focused');
-      target.style.boxShadow = '0 0 0 2px #d4a843, 0 8px 24px rgba(0,0,0,0.65)';
+      target.style.boxShadow = '0 0 0 2px #eab308, 0 8px 24px rgba(0,0,0,0.65)';
       target.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
       const handle = target.dataset.flxHandle || target.dataset.flxUser || 'profile';
@@ -3080,7 +3048,7 @@
         const labels = {
           female: `♀ Set /${handle} as Female`,
           male: `♂ Set /${handle} as Male`,
-          other: ` transgender Set /${handle} as Other`
+          other: `⚧ Set /${handle} as Other`
         };
         this.showToast(labels[nextManual] || `Reset /${handle} gender to Auto`);
         return;
@@ -3105,7 +3073,7 @@
         if (remaining.length > 0) this.focusCard(Math.min(this.activeIndex, remaining.length - 1));
         this.showToast(nextStatus ? `✕ Passed /${handle}` : `Restored /${handle}`);
         return;
-     Yes — the previous message was cut off at `CardNavigator.actOnFocused`. Here's the rest:
+      }
 
       if (action === 'note') {
         const cur = Store.getUser(userKey);
@@ -3483,16 +3451,16 @@
       selfBar.style.cssText = 'width:100%;max-width:1280px;margin:8px auto 0;padding:9px 14px;background:rgba(16,24,32,0.96);backdrop-filter:blur(10px);border:1px solid #0284c7;border-radius:8px;display:flex;flex-wrap:wrap;align-items:center;gap:10px;position:relative;z-index:90;box-sizing:border-box;font-family:system-ui,sans-serif;font-size:12px;color:#e4e4e7;';
 
       const badge = document.createElement('strong');
-      badge.style.color = PALETTE.ui.accent;
+      badge.style.color = '#7dd3fc';
       badge.textContent = `👤 Your Profile (/${displayHandle})`;
 
       const stats = document.createElement('span');
-      stats.style.color = PALETTE.ui.text.secondary;
+      stats.style.color = '#cbd5e1';
       stats.textContent = `${updatedSelf.fetishesInto.length} Into kinks • ${updatedSelf.fetishesLimits.length} Atomic Limits • ${updatedSelf.groups.length} Groups`;
 
       const learnAllBtn = document.createElement('button');
       learnAllBtn.type = 'button';
-      learnAllBtn.style.cssText = `background:rgba(122, 163, 184, 0.18);color:${PALETTE.ui.accent};border:1px solid #4a6b7d;border-radius:5px;padding:3px 9px;cursor:pointer;font-size:11px;font-weight:600;margin-left:auto;`;
+      learnAllBtn.style.cssText = 'background:rgba(56,189,248,0.18);color:#7dd3fc;border:1px solid #0284c7;border-radius:5px;padding:3px 9px;cursor:pointer;font-size:11px;font-weight:600;margin-left:auto;';
       learnAllBtn.textContent = '✨ Auto-Configure Filters From My Profile';
       learnAllBtn.title = 'Infer gender preferences from Orientation, set Local Region from your Location, and sync Into kinks & atomic Limits';
       learnAllBtn.addEventListener('click', () => {
@@ -3674,7 +3642,7 @@
       const pinBtn = document.createElement('button');
       pinBtn.type = 'button';
       pinBtn.style.cssText = isSticky
-        ? `background:rgba(122, 163, 184, 0.16);color:${PALETTE.ui.accent};border:1px solid #4a6b7d;border-radius:5px;padding:2px 7px;cursor:pointer;font-size:11px;font-weight:600;margin-left:auto;`
+        ? 'background:rgba(56,189,248,0.16);color:#7dd3fc;border:1px solid #0284c7;border-radius:5px;padding:2px 7px;cursor:pointer;font-size:11px;font-weight:600;margin-left:auto;'
         : 'background:#202024;color:#a1a1aa;border:1px solid #3f3f46;border-radius:5px;padding:2px 7px;cursor:pointer;font-size:11px;margin-left:auto;';
       pinBtn.textContent = isSticky ? '📌 Pinned' : '📌 Pin Bar';
       pinBtn.title = 'Keep this profile bar pinned at the top while scrolling';
@@ -3686,7 +3654,7 @@
       if (ruleHits.length > 0 && excludedHits.length === 0 && !genderRejected && !nonLocalRejected && !relRejected) {
         wrapper.style.borderColor = ruleHits[0].color;
       } else if (excludedHits.length > 0 || missingAbout || ageRejected || genderRejected || nonLocalRejected || relRejected) {
-        wrapper.style.borderColor = PALETTE.stage.hidden.border;
+        wrapper.style.borderColor = '#b91c1c';
       }
 
       wrapper.append(label, toolbar, pinBtn);
@@ -3816,8 +3784,8 @@
       left.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
 
       const title = document.createElement('strong');
-      title.style.color = PALETTE.ui.accent;
-      title.textContent = `CRM: /${escapeHtml(displayHandle)}`;
+      title.style.color = '#93c5fd';
+      title.textContent = `CRM: /${displayHandle}`;
       left.appendChild(title);
 
       const demoPill = createDemographicPill(
@@ -3840,7 +3808,7 @@
       for (const tpl of settings.messageTemplates) {
         const opt = document.createElement('option');
         opt.value = tpl.id;
-        opt.textContent = escapeHtml(tpl.title);
+        opt.textContent = tpl.title;
         tplSel.appendChild(opt);
       }
 
@@ -3920,7 +3888,7 @@
       if (record.note) {
         const noteLine = document.createElement('div');
         noteLine.style.cssText = 'padding:3px 7px;background:#1e1e24;border-left:2px solid #eab308;color:#fef08a;border-radius:3px;white-space:pre-wrap;width:100%;box-sizing:border-box;';
-        noteLine.textContent = escapeHtml(record.note);
+        noteLine.textContent = record.note;
         strip.appendChild(noteLine);
       }
 
@@ -4091,19 +4059,19 @@
           e.lookingFor ? `Looking for: ${e.lookingFor}` : ''
         ].filter(Boolean).join(' • ');
 
-        lines.push(`## [/${escapeHtml(e.displayHandle)}](${e.profileUrl}) — ${stageLabel}`);
-        if (meta) lines.push(`* **Profile:** ${escapeHtml(meta)}`);
+        lines.push(`## [/${e.displayHandle}](${e.profileUrl}) — ${stageLabel}`);
+        if (meta) lines.push(`* **Profile:** ${meta}`);
         if (e.lastContacted) lines.push(`* **Last Contacted:** ${e.lastContacted} (${e.daysSinceContact}d ago)`);
         else if (e.lastSeen) lines.push(`* **Last Viewed:** ${e.lastSeen}`);
         if (e.ruleHits.length > 0) lines.push(`* **Matches:** ${e.ruleHits.map(h => `${h.label} (${h.keyword})`).join(', ')}`);
-        if (e.fetishesLimits.length > 0) lines.push(`* **Profile Limits:** ${e.fetishesLimits.map(escapeHtml).join(', ')}`);
+        if (e.fetishesLimits.length > 0) lines.push(`* **Profile Limits:** ${e.fetishesLimits.join(', ')}`);
         if (e.limitConflicts.length > 0) lines.push(`* **Limit Conflicts:** ${e.limitConflicts.map(c => c.keyword).join(', ')}`);
-        if (e.excludedHits.length > 0) lines.push(`* **Excludes:** ${e.excludedHits.map(escapeHtml).join(', ')}`);
-        if (e.sharedGroups.length > 0) lines.push(`* **Shared Groups:** ${e.sharedGroups.map(escapeHtml).join(', ')}`);
-        if (e.note) lines.push(`> **Note:** ${escapeHtml(e.note).replace(/\n/g, '\n> ')}`);
+        if (e.excludedHits.length > 0) lines.push(`* **Excludes:** ${e.excludedHits.join(', ')}`);
+        if (e.sharedGroups.length > 0) lines.push(`* **Shared Groups:** ${e.sharedGroups.join(', ')}`);
+        if (e.note) lines.push(`> **Note:** ${e.note.replace(/\n/g, '\n> ')}`);
         if (e.aboutText) {
           const snippet = e.aboutText.slice(0, 500).replace(/\n+/g, ' ');
-          lines.push(`\n${escapeHtml(snippet)}${e.aboutText.length > 500 ? '…' : ''}`);
+          lines.push(`\n${snippet}${e.aboutText.length > 500 ? '…' : ''}`);
         }
         lines.push('\n---\n');
       }
@@ -4195,9 +4163,9 @@
               padding: 5px 9px; cursor: pointer; font-size: 12px; font-family: inherit;
             }
             button:hover { background: #2d2d35; color: #fff; }
-            button.active-tab { background: rgba(212, 168, 67, 0.16); border-color: #9a7b2e; color: #fde047; font-weight: 600; }
+            button.active-tab { background: rgba(234, 179, 8, 0.16); border-color: #ca8a04; color: #fde047; font-weight: 600; }
             button.toggle-pill { font-size: 11px; padding: 4px 8px; }
-            button.toggle-pill.on { background: rgba(122, 163, 184, 0.16); border-color: #4a6b7d; color: #7dd3fc; font-weight: 600; }
+            button.toggle-pill.on { background: rgba(56, 189, 248, 0.16); border-color: #0284c7; color: #7dd3fc; font-weight: 600; }
             button.danger-ghost { color: #fca5a5; border-color: #4c1d1d; }
             .list { flex: 1; overflow-y: auto; padding: 14px 18px; display: flex; flex-direction: column; gap: 12px; }
             .empty { text-align: center; color: #71717a; padding: 54px 16px; font-size: 13px; }
@@ -4207,16 +4175,16 @@
             .user-link:hover { text-decoration: underline; }
             .badges { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
             .pill { font-size: 11px; padding: 2px 7px; border-radius: 5px; background: #24242b; color: #a1a1aa; border: 1px solid #363640; }
-            .pill-ex { background: rgba(201, 122, 107, 0.16); color: #fca5a5; border-color: #8b4f44; }
-            .pill-warn { background: rgba(212, 168, 67, 0.18); color: #fcd34d; border-color: #9a7b2e; }
-            .pill-group { background: rgba(138, 184, 150, 0.12); color: #6ee7b7; border-color: rgba(138, 184, 150, 0.35); }
+            .pill-ex { background: rgba(239,68,68,0.16); color: #fca5a5; border-color: #b91c1c; }
+            .pill-warn { background: rgba(245,158,11,0.18); color: #fcd34d; border-color: #d97706; }
+            .pill-group { background: rgba(52,211,153,0.12); color: #6ee7b7; border-color: rgba(52,211,153,0.35); }
             .stage-bar { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
             .stage-btn { padding: 3px 8px; font-size: 11px; border-radius: 5px; }
             .gender-seg { display: inline-flex; border: 1px solid #3a3a44; border-radius: 5px; overflow: hidden; }
             .gender-seg button { border: none; border-radius: 0; padding: 3px 7px; font-size: 11px; background: #1d1d24; }
-            .gender-seg button.g-female { background: rgba(212, 168, 67, 0.22); color: #fde047; font-weight: 600; }
-            .gender-seg button.g-male { background: rgba(122, 163, 184, 0.22); color: #7dd3fc; font-weight: 600; }
-            .gender-seg button.g-other { background: rgba(138, 184, 150, 0.22); color: #6ee7b7; font-weight: 600; }
+            .gender-seg button.g-female { background: rgba(244,114,182,0.22); color: #f9a8d4; font-weight: 600; }
+            .gender-seg button.g-male { background: rgba(59,130,246,0.22); color: #93c5fd; font-weight: 600; }
+            .gender-seg button.g-other { background: rgba(168,85,247,0.22); color: #d8b4fe; font-weight: 600; }
             .gender-seg button.g-auto { background: #2c2c36; color: #e4e4e7; font-weight: 600; }
             .note-row { display: flex; gap: 8px; align-items: flex-start; width: 100%; }
             .note-area { flex: 1; min-height: 44px; resize: vertical; line-height: 1.45; background: #131317; border-color: #32323c; }
@@ -4227,8 +4195,8 @@
             .sub-tab.active { background: #2c2c36; color: #f4f4f5; border-color: #525260; }
             .bio-body { font-size: 12px; color: #d4d4d8; line-height: 1.5; white-space: pre-wrap; max-height: 220px; overflow-y: auto; }
             .fetish-group { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
-            .ftag-into { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(138, 184, 150, 0.14); color: #6ee7b7; border: 1px solid rgba(138, 184, 150, 0.35); }
-            .ftag-limit { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(201, 122, 107, 0.14); color: #fca5a5; border: 1px solid rgba(201, 122, 107, 0.35); }
+            .ftag-into { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(16,185,129,0.14); color: #6ee7b7; border: 1px solid rgba(16,185,129,0.35); }
+            .ftag-limit { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(239,68,68,0.14); color: #fca5a5; border: 1px solid rgba(239,68,68,0.35); }
           </style>
           <div class="backdrop" id="crm-backdrop">
             <div class="modal" role="dialog" aria-modal="true" aria-label="Local FetLife CRM">
@@ -4250,7 +4218,7 @@
                     <option value="all">All Genders</option>
                     <option value="female">♀ Cis Female Only</option>
                     <option value="male">♂ Male Only</option>
-                    <option value="other"> transgender Trans / NB / Other</option>
+                    <option value="other">⚧ Trans / NB / Other</option>
                     <option value="unknown">Gender Unknown</option>
                   </select>
                   <select id="crm-rel-filter">
@@ -4265,7 +4233,7 @@
                 <div class="control-row">
                   <select id="crm-cat-filter">
                     <option value="all">All Categories</option>
-                    ${settings.highlightRules.map(r => `<option value="rule:${r.id || r.label}">${escapeHtml(r.label)}</option>`).join('')}
+                    ${settings.highlightRules.map(r => `<option value="rule:${r.id || r.label}">${r.label}</option>`).join('')}
                     <option value="excluded">Has Excluded Term</option>
                     <option value="conflict">Has Limit Conflict</option>
                   </select>
@@ -4495,7 +4463,7 @@
         const activeStage = entry.status ? STAGE_MAP[entry.status] : null;
         if (activeStage) card.style.borderLeft = `4px solid ${activeStage.color}`;
         else if (entry.ruleHits.length > 0) card.style.borderLeft = `4px solid ${entry.ruleHits[0].color}`;
-        else if (entry.excludedHits.length > 0) card.style.borderLeft = `4px solid ${PALETTE.stage.hidden.border}`;
+        else if (entry.excludedHits.length > 0) card.style.borderLeft = '4px solid #b91c1c';
 
         const top = document.createElement('div');
         top.className = 'card-top';
@@ -4508,7 +4476,7 @@
         link.href = entry.profileUrl;
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
-        link.textContent = `/${escapeHtml(entry.displayHandle)}`;
+        link.textContent = `/${entry.displayHandle}`;
         leftInfo.appendChild(link);
 
         const demoPill = createDemographicPill(entry.age, entry.gender, entry.genderRole, entry.location, entry.isManualGender, entry.genderCategory);
@@ -4528,8 +4496,8 @@
         } else if (entry.isFollowing) {
           const b = document.createElement('span');
           b.className = 'pill';
-          b.style.color = PALETTE.ui.follow;
-          b.style.borderColor = PALETTE.stage.messaged.border;
+          b.style.color = '#7dd3fc';
+          b.style.borderColor = '#0369a1';
           b.textContent = '✓ Following';
           badges.appendChild(b);
         }
@@ -4537,17 +4505,17 @@
         if (entry.relationships) {
           const b = document.createElement('span');
           b.className = 'pill';
-          b.style.color = PALETTE.ui.cool;
-          b.style.borderColor = 'rgba(138, 184, 150, 0.35)';
-          b.textContent = escapeHtml(entry.relationships);
+          b.style.color = '#d8b4fe';
+          b.style.borderColor = 'rgba(168,85,247,0.35)';
+          b.textContent = entry.relationships;
           badges.appendChild(b);
         }
 
         if (entry.lastContacted) {
           const b = document.createElement('span');
           b.className = 'pill';
-          b.style.color = entry.followUpDue ? PALETTE.ui.warn : PALETTE.ui.follow;
-          b.style.borderColor = entry.followUpDue ? PALETTE.stage.shortlist.border : PALETTE.stage.messaged.border;
+          b.style.color = entry.followUpDue ? '#fde047' : '#7dd3fc';
+          b.style.borderColor = entry.followUpDue ? '#ca8a04' : '#0369a1';
           b.textContent = entry.followUpDue
             ? `⏰ Contacted ${entry.lastContacted} (${entry.daysSinceContact}d ago)`
             : `Contacted ${entry.lastContacted}`;
@@ -4565,8 +4533,8 @@
           const limCount = entry.fetishesLimits.length;
           b.textContent = `${entry.hasAbout ? 'About ✓' : 'No About'}${entry.fetishesInto.length ? ' • Fetishes ✓' : ''}${limCount ? ` • Limits (${limCount})` : ''}`;
           if (entry.noAbout) {
-            b.style.color = PALETTE.ui.warn;
-            b.style.borderColor = PALETTE.stage.hidden.border;
+            b.style.color = '#fca5a5';
+            b.style.borderColor = '#7f1d1d';
           }
           badges.appendChild(b);
         }
@@ -4574,7 +4542,7 @@
         for (const g of entry.sharedGroups.slice(0, 3)) {
           const b = document.createElement('span');
           b.className = 'pill pill-group';
-          b.textContent = `🤝 ${escapeHtml(g)}`;
+          b.textContent = `🤝 ${g}`;
           badges.appendChild(b);
         }
 
@@ -4595,7 +4563,7 @@
         for (const kw of entry.excludedHits) {
           const b = document.createElement('span');
           b.className = 'pill pill-ex';
-          b.textContent = `-${escapeHtml(kw)}`;
+          b.textContent = `-${kw}`;
           badges.appendChild(b);
         }
 
@@ -4611,7 +4579,7 @@
           { val: null,     label: 'Auto',     activeCls: 'g-auto' },
           { val: 'female', label: '♀ Female', activeCls: 'g-female' },
           { val: 'male',   label: '♂ Male',   activeCls: 'g-male' },
-          { val: 'other',  label: ' transgender Other',  activeCls: 'g-other' }
+          { val: 'other',  label: '⚧ Other',  activeCls: 'g-other' }
         ];
         for (const gOpt of genderOpts) {
           const gBtn = document.createElement('button');
@@ -4661,7 +4629,7 @@
         if (entry.lookingFor) {
           const lfLine = document.createElement('div');
           lfLine.style.cssText = 'font-size:11px;color:#9ca3af;';
-          lfLine.textContent = `Looking for: ${escapeHtml(entry.lookingFor)}`;
+          lfLine.textContent = `Looking for: ${entry.lookingFor}`;
           card.appendChild(lfLine);
         }
 
@@ -4670,7 +4638,7 @@
 
         const noteArea = document.createElement('textarea');
         noteArea.className = 'note-area';
-        noteArea.placeholder = `Private notes for /${escapeHtml(entry.displayHandle)}...`;
+        noteArea.placeholder = `Private notes for /${entry.displayHandle}...`;
         noteArea.value = entry.note;
 
         const saveNoteBtn = document.createElement('button');
@@ -4725,7 +4693,7 @@
                 for (const item of entry.fetishesInto) {
                   const chip = document.createElement('span');
                   chip.className = 'ftag-into';
-                  chip.textContent = escapeHtml(item);
+                  chip.textContent = item;
                   wrap.appendChild(chip);
                 }
                 bodyBox.append(lbl, wrap);
@@ -4739,7 +4707,7 @@
                 for (const item of entry.fetishesLimits) {
                   const chip = document.createElement('span');
                   chip.className = 'ftag-limit';
-                  chip.textContent = escapeHtml(item);
+                  chip.textContent = item;
                   wrap.appendChild(chip);
                 }
                 bodyBox.append(lbl, wrap);
@@ -4750,7 +4718,7 @@
             } else if (activeSub === 'writings') {
               bodyBox.textContent = entry.writingsText || 'No Writings or Lists cached for this profile.';
             } else if (activeSub === 'groups') {
-              bodyBox.textContent = entry.groups.length > 0 ? entry.groups.map(escapeHtml).join('  •  ') : 'No groups cached for this profile.';
+              bodyBox.textContent = entry.groups.length > 0 ? entry.groups.join('  •  ') : 'No groups cached for this profile.';
             } else {
               bodyBox.textContent = entry.fullText || 'No full-text cache stored.';
             }
@@ -4769,7 +4737,6 @@
             tBtn.type = 'button';
             tBtn.className = `sub-tab ${activeSub === opt.id ? 'active' : ''}`;
             tBtn.textContent = opt.label;
-            tBtn.dataset.tab = opt.id;
             tBtn.addEventListener('click', () => { activeSub = opt.id; renderCacheBody(); });
             subTabs.appendChild(tBtn);
           }
@@ -4882,10 +4849,10 @@
             padding: 4px 8px; cursor: pointer; font-size: 11px;
           }
           button:hover { background: #303038; color: #fff; }
-          button.star { background: rgba(212, 168, 67, 0.18); border-color: #9a7b2e; color: #fde047; font-weight: 600; }
-          button.sky { background: rgba(122, 163, 184, 0.16); border-color: #4a6b7d; color: #7dd3fc; font-weight: 600; }
-          button.danger { background: rgba(201, 122, 107, 0.18); border-color: #8b4f44; color: #fca5a5; }
-          button.capturing { background: rgba(122, 163, 184, 0.22); border-color: #4a6b7d; color: #7dd3fc; font-weight: 600; }
+          button.star { background: rgba(234, 179, 8, 0.18); border-color: #ca8a04; color: #fde047; font-weight: 600; }
+          button.sky { background: rgba(56, 189, 248, 0.16); border-color: #0284c7; color: #7dd3fc; font-weight: 600; }
+          button.danger { background: rgba(239, 68, 68, 0.18); border-color: #dc2626; color: #fca5a5; }
+          button.capturing { background: rgba(56, 189, 248, 0.22); border-color: #0284c7; color: #7dd3fc; font-weight: 600; }
           .scan-pill {
             font-size: 11px; color: #a1a1aa; padding: 2px 7px; background: #1c1c22;
             border: 1px solid #303038; border-radius: 5px; max-width: 195px;
@@ -4963,7 +4930,7 @@
               <div class="gender-grid">
                 <label class="inline-label"><input type="checkbox" id="in-g-female"> ♀ Cis Female</label>
                 <label class="inline-label"><input type="checkbox" id="in-g-male"> ♂ Cis Male</label>
-                <label class="inline-label"><input type="checkbox" id="in-g-other"> transgender Trans / Non-Binary / Other</label>
+                <label class="inline-label"><input type="checkbox" id="in-g-other"> ⚧ Trans / Non-Binary / Other</label>
                 <label class="inline-label"><input type="checkbox" id="in-g-unknown"> ❓ Unspecified Gender</label>
               </div>
             </div>
@@ -5126,8 +5093,8 @@
         for (const pack of Object.values(Store.getAllAvailablePacks())) {
           const opt = document.createElement('option');
           opt.value = pack.id;
-          opt.textContent = escapeHtml(pack.name);
-          opt.title = escapeHtml(pack.description || '');
+          opt.textContent = pack.name;
+          opt.title = pack.description || '';
           sel.appendChild(opt);
         }
       };
@@ -5144,17 +5111,17 @@
         const intoCount = (selfProf.fetishesInto || []).length;
         const limCount = (selfProf.fetishesLimits || []).length;
         $('self-profile-summary').textContent =
-          `/${escapeHtml(handleLabel)} • ${escapeHtml(selfProf.orientation || 'Orientation?')} • ${escapeHtml(selfProf.location || 'Location?')} • ${intoCount} Into • ${limCount} Limits`;
+          `/${handleLabel} • ${selfProf.orientation || 'Orientation?'} • ${selfProf.location || 'Location?'} • ${intoCount} Into • ${limCount} Limits`;
       };
 
-      const addRuleRow = (rule = { label: 'New Tag', color: PALETTE.ui.accent, keywords: [] }) => {
+      const addRuleRow = (rule = { label: 'New Tag', color: '#f472b6', keywords: [] }) => {
         const row = document.createElement('div');
         row.className = 'rule-row';
         row.dataset.ruleId = rule.id || `custom_${Date.now()}`;
 
         const colorInput = document.createElement('input');
         colorInput.type = 'color';
-        colorInput.value = rule.color || PALETTE.ui.accent;
+        colorInput.value = rule.color || '#38bdf8';
 
         const labelInput = document.createElement('input');
         labelInput.type = 'text';
@@ -5319,7 +5286,7 @@
             const imported = Store.sanitizeAndStoreImportedPack(rawText);
             refreshPackDropdown();
             $('in-pack-select').value = imported.id;
-            $('hud-status').textContent = `✓ Imported pack "${escapeHtml(imported.name)}" from ${escapeHtml(fileName)} (≤2 words, deduplicated)`;
+            $('hud-status').textContent = `✓ Imported pack "${imported.name}" from ${fileName} (≤2 words, deduplicated)`;
             setTimeout(() => { $('hud-status').textContent = ''; }, 3500);
           } catch (err) {
             $('hud-status').textContent = `✕ Invalid pack JSON: ${err.message}`;
@@ -5335,7 +5302,7 @@
         $('in-new-pack-name').value = '';
         refreshPackDropdown();
         $('in-pack-select').value = created.id;
-        $('hud-status').textContent = `✓ Saved preset pack "${escapeHtml(created.name)}"`;
+        $('hud-status').textContent = `✓ Saved preset pack "${created.name}"`;
         setTimeout(() => { $('hud-status').textContent = ''; }, 3000);
       });
 
@@ -5343,7 +5310,7 @@
         const packName = $('in-new-pack-name').value.trim() || 'FetLife-Filter-Pack';
         const packObj = Store.buildPackFromCurrentSettings(packName);
         downloadTextFile(`${packObj.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.json`, JSON.stringify(packObj, null, 2));
-        $('hud-status').textContent = `✓ Exported "${escapeHtml(packObj.name)}" (.json)`;
+        $('hud-status').textContent = `✓ Exported "${packObj.name}" (.json)`;
         setTimeout(() => { $('hud-status').textContent = ''; }, 3000);
       });
 
@@ -5585,7 +5552,7 @@
             this.syncQuickButtons();
             Array.from(document.getElementsByClassName('flx-profile-bar')).forEach(el => el.remove());
             runAll();
-            $('hud-status').textContent = `✓ Restored backup from ${escapeHtml(fileName)}`;
+            $('hud-status').textContent = `✓ Restored backup from ${fileName}`;
           } catch (err) {
             $('hud-status').textContent = `✕ Invalid JSON file: ${err.message}`;
           }
@@ -5713,16 +5680,6 @@
     }, delay);
   }
 
-  function cleanup() {
-    observer.disconnect();
-    clearTimeout(debounceTimer);
-    clearTimeout(scrollIdleTimer);
-    if (stickyRafPending) cancelAnimationFrame(syncStickyViewportOffset);
-    if (BatchOpener.timer) clearTimeout(BatchOpener.timer);
-    if (CardNavigator.toastEl) CardNavigator.toastEl.remove();
-    if (CardNavigator.toastTimer) clearTimeout(CardNavigator.toastTimer);
-  }
-
   document.addEventListener('keydown', (e) => {
     if (Hud.capturingKeyAction) return;
 
@@ -5778,3 +5735,14 @@
       CardNavigator.actOnFocused('openTab');
     }
   });
+
+  runAll();
+  document.addEventListener('turbo:load', scheduleRun);
+  document.addEventListener('turbo:render', scheduleRun);
+  document.addEventListener('turbo:before-stream-render', scheduleRun);
+  window.addEventListener('popstate', scheduleRun);
+  window.addEventListener('focus', scheduleRun);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) scheduleRun();
+  });
+})();
