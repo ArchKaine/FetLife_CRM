@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         FetLife Local Cache Filter & CRM
 // @namespace    local.fl.enhancer
-// @version      1.17.3
-// @description  High-performance passive profile caching, infinite-scroll loop protection, neutral-by-default multi-select gender/location/relationship filters, built-in fetish/lifestyle lexicon, 2-word max term filter, duplicate entry detector, preset pack save/load/import/export, smart self-profile preference learner, Friends/Follows/CRM visibility protection, throttled batch tab opener, and searchable CRM modal
+// @version      1.18.4
+// @description  High-performance passive profile caching, infinite-scroll loop protection, neutral-by-default multi-select gender/location/relationship filters, built-in fetish/lifestyle lexicon, adaptive phrase-length kink filter, hard/soft limit auto-detection, duplicate entry detector, preset pack save/load/import/export, smart self-profile preference learner, Friends/Follows/CRM visibility protection, throttled batch tab opener, and searchable CRM modal
 // @match        https://fetlife.com/*
 // @match        https://*.fetlife.com/*
 // @grant        GM_getValue
@@ -40,19 +40,40 @@
     sensory: [
       'sensation', 'edging', 'violet wand', 'estim', 'e-stim', 'leather',
       'voyeur', 'switch', 'squirting', 'massage', 'tickling', 'sensory play',
-      'wax play', 'roleplay', 'costumes', 'lingerie'
+      'wax play', 'roleplay', 'costumes', 'lingerie', 'temperature play',
+      'ice play', 'feather', 'blindfold optional', 'sounding', 'urethral play',
+      'genital jewelry', 'prince albert', 'frenum', 'nipple play', 'nipple clamps',
+      'oral', 'cunnilingus', 'fellatio', 'rimming', 'fisting', 'pegging',
+      'anal play', 'prostate', 'tantra', 'tantric', 'breath play light'
     ],
     impactAndRestraint: [
       'restraint', 'ropes', 'shibari', 'bondage', 'cuffs', 'blindfold',
       'impact play', 'spanking', 'flogger', 'paddle', 'crop', 'caning',
       'masochism', 'sadism', 'watersports', 'scat', 'ddlg', 'tpe',
-      'protocols', 'findom', 'paypig', 'tribute', 'hotwife', 'cuckold', 'stag'
+      'protocols', 'findom', 'paypig', 'tribute', 'hotwife', 'cuckold', 'stag',
+      'collar', 'leash', 'gag', 'muzzle', 'hood', 'suspension', 'predicament',
+      'knife play', 'needle play', 'blood play', 'branding', 'scarification',
+      'cnc', 'consensual nonconsent', 'rape play', 'humiliation', 'degradation',
+      'pet play', 'pony play', 'puppy play', 'kitten play', 'age play',
+      'abdl', 'diaper', 'feminization', 'sissy', 'forced bi'
     ],
     relationshipsAndLifestyle: [
       'polyamory', 'polyamorous', 'polyfidelity', 'closed vee', 'co-parenting',
       'nesting', 'solo poly', 'monogamy', 'sober', 'straight edge',
       'alcohol-free', 'drug-free', 'nudist', 'clothing-optional', 'nude yoga',
-      'neurodivergent', 'autism', 'low-masking', 'intj', 'direct', 'tinkerer'
+      'neurodivergent', 'autism', 'low-masking', 'intj', 'direct', 'tinkerer',
+      'relationship anarchy', 'kitchen table poly', 'parallel poly', 'swinging',
+      'ethical nonmonogamy', 'enm', 'primary', 'secondary', 'comet',
+      'fluid bonded', 'barrier method', 'prEP', 'sti testing'
+    ],
+    // Terms that commonly appear as hard limits on FetLife profiles
+    commonHardLimits: [
+      'scat', 'watersports', 'blood play', 'knife play', 'needle play',
+      'breath play', 'choking', 'cnc', 'rape play', 'permanent marks',
+      'branding', 'scarification', 'nonconsensual', 'no means yes',
+      'findom', 'paypig', 'financial domination', 'blackmail',
+      'age play', 'abdl', 'underage', 'race play', 'bestiality',
+      'necrophilia', 'vomit', 'emetophilia', 'heavy drugs', 'intox play'
     ]
   };
 
@@ -178,7 +199,13 @@
     cardViewMode: 'full',
     stickyProfileBar: true,
     showNotesInline: true,
-    bioCacheTtlDays: 14
+    bioCacheTtlDays: 14,
+    // Limit comparison display (mine / theirs / overlap / conflict)
+    showTheirHardLimits: true,
+    showTheirSoftLimits: true,
+    showMyLimits: false,
+    showLimitOverlap: true,
+    showLimitConflicts: true
   };
 
   // =========================================================================
@@ -193,6 +220,9 @@
       .trim();
   }
 
+  // Adaptive phrase-length sanitizer: 1–5 words, up to 48 chars.
+  // Accepts common multi-word kink names (e.g. "violet wand", "closed vee",
+  // "impact play", "sensory deprivation") while still rejecting sentence fragments.
   function sanitizeTwoWordTerm(rawItem) {
     if (!rawItem || typeof rawItem !== 'string') return null;
 
@@ -202,25 +232,42 @@
       .replace(/[—–;].*$/, '')
       .replace(/^[-•*▪▫‣⁃>\s]+/, '')
       .replace(/^(?:and|or|also|plus|strictly|absolutely|definitely|zero\s+on|zero|no|any|being)\s+/i, '')
-      .replace(/^(?:no|zero)\s+/i, '')
+      .replace(/^(?:no|zero|not\s+into|hard\s+pass(?:\s+on)?|soft\s+limit)\s+/i, '')
+      // Drop prose wrappers like "fluid-positive does not include urine"
+      .replace(/^.*\b(?:does\s+not\s+include|doesn'?t\s+include|excluding|except)\s+/i, '')
+      .replace(/\b(?:kinks?|fetishes)\s*$/i, '') // "biological waste kinks" → "biological waste"
       .replace(/[.!?:,]+$/, '')
       .replace(/\s+/g, ' ')
       .trim();
 
-    if (!cleaned || cleaned.length < 2 || cleaned.length > 32) return null;
+    if (!cleaned || cleaned.length < 2 || cleaned.length > 48) return null;
 
     const words = cleaned.split(/\s+/).filter(Boolean);
-    if (words.length === 0 || words.length > 2) return null;
+    if (words.length === 0 || words.length > 5) return null;
 
-    if (/\b(?:i|me|my|we|our|you|your|it|is|are|was|were|be|been|have|has|had|do|does|did|need|want|like|love|great|good|bad|okay|ok|until|unless|because|since|when|while|if|that|which|who|for|to|from|into|with|without|requires?|gated|intact|mean|means|though|even)\b/i.test(cleaned)) {
-      return null;
+    // Reject pure function-word / sentence fragments
+    if (/\b(?:i|me|my|we|our|you|your|it|is|are|was|were|be|been|have|has|had|do|does|did|need|want|like|love|great|good|bad|okay|ok|until|unless|because|since|when|while|if|that|which|who|for|to|from|into|with|without|requires?|gated|intact|mean|means|though|even|will|won'?t|cannot|can'?t)\b/i.test(cleaned) && words.length <= 2) {
+      // Allow known multi-word kink phrases that happen to contain mild connectors
+      const allowList = /^(?:closed vee|solo poly|impact play|wax play|pet play|age play|knife play|needle play|blood play|breath play|temperature play|ice play|sensory play|sensory deprivation|violet wand|prince albert|ethical nonmonogamy|kitchen table|relationship anarchy|barrier method|sti testing|hard limit|soft limit|physical restraint|biological waste|deep kissing|oral intimacy)$/i;
+      if (!allowList.test(cleaned)) return null;
     }
 
-    if (/^(?:into|curious|likes?|yes|loves?|favou?rites?|about(?:\s+me)?|looking\s+for|soft\s+limits?|hard\s+limits?|limits?|safety|red\s+lines?)$/i.test(cleaned)) {
+    if (/^(?:into|curious|likes?|yes|loves?|favou?rites?|about(?:\s+me)?|looking\s+for|soft\s+limits?|hard\s+limits?|limits?|safety|red\s+lines?|hard\s+nos?|deal\s*breakers?)$/i.test(cleaned)) {
       return null;
     }
 
     return cleaned;
+  }
+
+  function classifyLimitStrength(rawLine, itemText) {
+    const ctx = `${rawLine || ''} ${itemText || ''}`.toLowerCase();
+    if (/\b(?:hard\s+limits?|hard\s+nos?|hard\s+passes?|absolute|deal\s*breakers?|red\s+lines?|will\s+not|won'?t\s+do|strictly\s+no|zero\s+on|off\s+the\s+table)\b/.test(ctx)) {
+      return 'hard';
+    }
+    if (/\b(?:soft\s+limits?|maybe|negotiable|depends|context|with\s+trust|after\s+discussion)\b/.test(ctx)) {
+      return 'soft';
+    }
+    return 'unspecified';
   }
 
   function deduplicateTerms(incomingTerms, existingSet = new Set()) {
@@ -828,6 +875,8 @@
       const headerText = (rawEntry.headerText || rawEntry.sections?.header || '').trim();
       const fetishesInto = Array.isArray(rawEntry.fetishesInto) ? rawEntry.fetishesInto : [];
       const fetishesLimits = Array.isArray(rawEntry.fetishesLimits) ? rawEntry.fetishesLimits : [];
+      const hardLimits = Array.isArray(rawEntry.hardLimits) ? rawEntry.hardLimits : [];
+      const softLimits = Array.isArray(rawEntry.softLimits) ? rawEntry.softLimits : [];
       const fetishesRaw = fetishesInto.length === 0
         ? (rawEntry.fetishesRaw || rawEntry.sections?.fetishes || '').trim()
         : '';
@@ -850,6 +899,8 @@
           hasAbout,
           fetishesInto: [],
           fetishesLimits,
+          hardLimits,
+          softLimits,
           fetishesRaw: '',
           age: normalizeValidAge(rawEntry.age),
           gender: rawEntry.gender || null,
@@ -873,6 +924,8 @@
         hasAbout,
         fetishesInto,
         fetishesLimits,
+        hardLimits,
+        softLimits,
         fetishesRaw,
         age: normalizeValidAge(rawEntry.age),
         gender: rawEntry.gender || null,
@@ -1029,6 +1082,8 @@
         location: null,
         fetishesInto: [],
         fetishesLimits: [],
+        hardLimits: [],
+        softLimits: [],
         groups: [],
         syncedAt: null
       });
@@ -1059,10 +1114,49 @@
         intoAdded = cleanKinks.length;
       }
 
+      // Split limits into hard vs soft. Hard limits become excludes (filter out).
+      // Soft limits become a warning highlight rule (do not auto-hide).
+      // Prefer structured hard/soft from profile parser when available
+      let hardRaw = Array.isArray(selfData?.hardLimits) ? [...selfData.hardLimits] : [];
+      let softRaw = Array.isArray(selfData?.softLimits) ? [...selfData.softLimits] : [];
       const limitsList = Array.isArray(selfData?.fetishesLimits) ? selfData.fetishesLimits : [];
+
+      if (hardRaw.length === 0 && softRaw.length === 0 && limitsList.length > 0) {
+        const commonHard = new Set(
+          (KNOWN_FETISH_LEXICON.commonHardLimits || []).map(k => normalizeTermKey(k)).filter(Boolean)
+        );
+        for (const item of limitsList) {
+          const strength = classifyLimitStrength('', item);
+          const key = normalizeTermKey(item);
+          if (strength === 'soft') softRaw.push(item);
+          else if (strength === 'hard' || (key && commonHard.has(key))) hardRaw.push(item);
+          else hardRaw.push(item); // unspecified → hard
+        }
+      }
+
       const existingExSet = new Set((settings.excludeKeywords || []).map(k => normalizeTermKey(k)).filter(Boolean));
-      const { unique: newExcludes } = deduplicateTerms(limitsList, existingExSet);
+      const { unique: newExcludes } = deduplicateTerms(hardRaw, existingExSet);
       const nextExcludes = [...(settings.excludeKeywords || []), ...newExcludes];
+
+      const { unique: cleanSoft } = deduplicateTerms(softRaw, seenTerms);
+      if (cleanSoft.length > 0) {
+        const softIdx = rules.findIndex(r => r.id === 'self_soft_limits');
+        const softRule = {
+          id: 'self_soft_limits',
+          label: 'Soft Limit',
+          color: '#c9a227',
+          keywords: cleanSoft
+        };
+        if (softIdx >= 0) rules[softIdx] = softRule;
+        else rules.push(softRule);
+      }
+
+      // Persist classified limits on self profile for verification / CRM
+      this.saveSelfProfile({
+        hardLimits: hardRaw,
+        softLimits: softRaw,
+        fetishesLimits: limitsList
+      });
 
       patch.highlightRules = rules;
       patch.excludeKeywords = nextExcludes;
@@ -1106,7 +1200,7 @@
 
       this.saveSettings(patch);
       this.saveSelfProfile({ syncedAt: Date.now() });
-      return { intoAdded, limitsAdded: newExcludes.length };
+      return { intoAdded, limitsAdded: newExcludes.length, softAdded: cleanSoft.length, hardAdded: newExcludes.length };
     },
     getSelfGroups() {
       const selfProf = this.getSelfProfile();
@@ -1332,6 +1426,12 @@
       const nextLimits = (incoming.fetishesLimits && incoming.fetishesLimits.length > 0)
         ? incoming.fetishesLimits
         : (prev.fetishesLimits || []);
+      const nextHard = (incoming.hardLimits && incoming.hardLimits.length > 0)
+        ? incoming.hardLimits
+        : (prev.hardLimits || []);
+      const nextSoft = (incoming.softLimits && incoming.softLimits.length > 0)
+        ? incoming.softLimits
+        : (prev.softLimits || []);
       const nextGroups = (incoming.groups && incoming.groups.length > 0)
         ? incoming.groups
         : (prev.groups || []);
@@ -1355,6 +1455,8 @@
         hasAbout,
         fetishesInto: isPassed ? [] : nextInto,
         fetishesLimits: nextLimits,
+        hardLimits: isPassed ? [] : nextHard,
+        softLimits: nextSoft,
         fetishesRaw: nextFetishesRaw,
         age: resolvedAge,
         gender: nextGender,
@@ -2005,97 +2107,133 @@
 
   function extractLimitsFromProfileText(aboutText, fallbackProfileText = '') {
     const source = [aboutText || '', fallbackProfileText || ''].filter(Boolean).join('\n');
-    if (!source) return [];
+    if (!source) return { hard: [], soft: [], all: [] };
 
-    const results = [];
+    const hard = [];
+    const soft = [];
     const seen = new Set();
 
-    const addCandidate = (rawItem) => {
-      const valid = sanitizeTwoWordTerm(rawItem);
-      if (!valid) return;
-      const key = normalizeTermKey(valid);
-      if (!seen.has(key)) {
+    const pushTerm = (raw, strength) => {
+      if (!raw) return;
+      // Expand simple slash pairs: urine/scat
+      const parts = String(raw).split('/').map(s => s.trim()).filter(Boolean);
+      for (const part of parts) {
+        const valid = sanitizeTwoWordTerm(part);
+        if (!valid) continue;
+        const key = normalizeTermKey(valid);
+        if (!key || seen.has(key)) continue;
         seen.add(key);
-        results.push(valid);
+        if (strength === 'soft') soft.push(valid);
+        else hard.push(valid); // hard + unspecified → hard (safer default only inside hard sections)
       }
     };
 
-    const splitAndAddClause = (clause) => {
+    // Split a hard-limits clause: "No A (x, y). No B or C (p, q)."
+    const splitHardClause = (clause) => {
       if (!clause) return;
-      const stripped = clause
-        .replace(/\([^)]*\)/g, ' ')
-        .replace(/["“”][^"“”]*["“”]/g, ' ')
-        .split(/[.;—–]/)[0] || '';
+      const parenChunks = [];
+      // Em-dash tails inside parens are commentary: (blindfolds, hoods—I need awareness)
+      let work = String(clause).replace(/\(([^)]{0,100})\)/g, (_, inner) => {
+        const cleanedInner = String(inner).replace(/[—–].*$/, '').trim();
+        if (cleanedInner) parenChunks.push(cleanedInner);
+        return ' ';
+      });
+      work = work
+        .replace(/\bNo\s+/gi, ' | ')
+        .replace(/\bNot\s+into\s+/gi, ' | ')
+        .replace(/\bzero\s+on\s+/gi, ' | ')
+        .replace(/[.;]/g, ' | ')
+        .replace(/\s+\/\s+/g, ' | ')
+        .replace(/[—–]/g, ' ')
+        .replace(/\b(?:kinks?|fetishes)\b/gi, ' ');
+      for (const tok of work.split(/\||,|•|\band\b|\bor\b/i)) {
+        pushTerm(tok, 'hard');
+      }
+      for (const inner of parenChunks) {
+        // Drop prose wrappers inside parens
+        let bit = String(inner)
+          .replace(/^.*\b(?:does\s+not\s+include|doesn'?t\s+include|excluding|except)\s+/i, '')
+          .replace(/[—–].*$/, '');
+        for (const tok of bit.split(/\||,|\/|•|\band\b|\bor\b/i)) {
+          pushTerm(tok, 'hard');
+        }
+      }
+    };
 
-      const tokens = stripped.split(/,|\/|\||•|\band\b|\bor\b|\bnor\b/i);
-      for (const tok of tokens) addCandidate(tok);
+    // Soft limits are usually prose. Pull known gated acts, not full sentences.
+    const SOFT_ACT_RE = /\b((?:deep\s+)?kissing|tongues?|deep\s+oral(?:\s+intimacy)?|oral\s+intimacy|sleep\s+play|CNC|breath\s+play|light\s+bondage|photos?|videos?|public\s+play|group\s+play|alcohol|drugs?)\b/gi;
+    const extractSoftActs = (prose) => {
+      if (!prose) return;
+      let match;
+      SOFT_ACT_RE.lastIndex = 0;
+      while ((match = SOFT_ACT_RE.exec(prose)) !== null) {
+        pushTerm(match[1], 'soft');
+      }
+      // Fallback: if section exists but no acts matched, still note gated kissing if "kiss" appears
+      if (/\bkiss/i.test(prose)) pushTerm('deep kissing', 'soft');
+    };
+
+    const INLINE_LABEL_RE = /^(?:my\s+)?(?:hard\s+and\s+soft\s+limits?|hard\s+limits?|soft\s+limits?(?:\s*&\s*safety)?|limits?|hard\s+nos?|hard\s+passes|absolute\s+red\s+lines?|red\s+lines?|not\s+into|things?\s+i['’]?m\s+not\s+into|deal\s*breakers?|turn\s*offs?|will\s+not\s+do|won['’]?t\s+do|off\s+the\s+table)(?:\s*(?:\([^)]{1,64}\)|&[^:–—-]{1,40}))?\s*(?:include|are|:|-|–|—)\s*(.+)$/i;
+    const STANDALONE_HEADING_RE = /^(?:my\s+)?(?:hard\s+and\s+soft\s+limits?|hard\s+limits?|soft\s+limits?(?:\s*&\s*safety)?|limits?|hard\s+nos?|hard\s+passes|absolute\s+red\s+lines?|red\s+lines?|not\s+into|deal\s*breakers?|turn\s*offs?)(?:\s*(?:\([^)]{1,64}\)|&[^:]{1,40}))?\s*:?$/i;
+    const NEXT_SECTION_HEADING_RE = /^(?:about(?:\s+me)?|into|curious|likes?|loves?|favou?rites?|yes(?:es)?|looking\s+for|seeking|turn\s*ons?|kinks?|fetishes|fantasies|bio|summary|rules|expectations|message\s+me|connecting|in\s+the\s+bedroom|sti\s+status|health\s*&\s*boundaries|who\s+you|what\s+i|quick\s+in-person|body\s*&\s*routine|fuel|hardware|giving|sensation)\b/i;
+
+    const strengthFromLabel = (label) => {
+      const l = (label || '').toLowerCase();
+      if (/soft/.test(l) && !/hard\s+and\s+soft/.test(l)) return 'soft';
+      if (/hard|absolute|red\s+line|deal\s*break|hard\s+no|hard\s+pass/.test(l)) return 'hard';
+      if (/hard\s+and\s+soft/.test(l)) return 'mixed';
+      return 'hard'; // bare "Limits:" treated as hard for safety
     };
 
     const lines = source.split(/\n+/).map(l => l.trim()).filter(Boolean);
-
-    const INLINE_LABEL_RE = /^(?:my\s+)?(?:hard\s+and\s+soft\s+limits?|hard\s+limits?|soft\s+limits?|limits?|hard\s+nos?|hard\s+passes|not\s+into|things?\s+i['’]?m\s+not\s+into|deal\s*breakers?|turn\s*offs?|will\s+not\s+do|won['’]?t\s+do|off\s+the\s+table)(?:\s*(?:\([^)]{1,48}\)|&[^:–—-]{1,32}))?\s*(?:include|are|:|-|–|—)\s*(.+)$/i;
-    const STANDALONE_HEADING_RE = /^(?:my\s+)?(?:hard\s+and\s+soft\s+limits?|hard\s+limits?|soft\s+limits?|limits?|hard\s+nos?|hard\s+passes|not\s+into|deal\s*breakers?|turn\s*offs?)(?:\s*(?:\([^)]{1,48}\)|&[^:]{1,32}))?\s*:?$/i;
-    const NEXT_SECTION_HEADING_RE = /^(?:about(?:\s+me)?|into|curious|likes?|loves?|favou?rites?|yes(?:es)?|looking\s+for|seeking|turn\s*ons?|kinks?|fetishes|fantasies|bio|summary|rules|expectations|message\s+me|connecting|in\s+the\s+bedroom|sti\s+status)\b/i;
-
-    let inLimitListBlock = false;
-    let listLinesCaptured = 0;
+    let inBlock = false;
+    let blockStrength = 'hard';
 
     for (const line of lines) {
       const inlineMatch = line.match(INLINE_LABEL_RE);
       if (inlineMatch) {
-        splitAndAddClause(inlineMatch[1]);
-        inLimitListBlock = false;
+        const labelPart = line.slice(0, line.length - inlineMatch[1].length);
+        const strength = strengthFromLabel(labelPart);
+        if (strength === 'soft') {
+          extractSoftActs(inlineMatch[1]);
+        } else if (strength === 'mixed') {
+          // Ambiguous single-line mix: treat list items as hard (safer)
+          splitHardClause(inlineMatch[1]);
+        } else {
+          splitHardClause(inlineMatch[1]);
+        }
+        inBlock = false;
         continue;
       }
 
       if (STANDALONE_HEADING_RE.test(line)) {
-        inLimitListBlock = true;
-        listLinesCaptured = 0;
+        inBlock = true;
+        blockStrength = strengthFromLabel(line);
         continue;
       }
 
-      if (inLimitListBlock) {
-        if (
-          NEXT_SECTION_HEADING_RE.test(line) ||
-          (line.endsWith(':') && line.length < 36) ||
-          listLinesCaptured >= 12
-        ) {
-          inLimitListBlock = false;
+      if (inBlock) {
+        if (NEXT_SECTION_HEADING_RE.test(line) || (line.endsWith(':') && line.length < 40 && !/limit/i.test(line))) {
+          inBlock = false;
           continue;
         }
-
-        const colonIdx = line.indexOf(':');
-        if (colonIdx > 2 && colonIdx < 40) {
-          const leftLabel = line.slice(0, colonIdx).trim();
-          const rightItems = line.slice(colonIdx + 1).trim();
-          addCandidate(leftLabel);
-
-          const semiParts = rightItems.split(';');
-          splitAndAddClause(semiParts[0]);
-          for (let i = 1; i < semiParts.length; i++) {
-            if (/\b(?:no|zero)\b/i.test(semiParts[i])) splitAndAddClause(semiParts[i]);
-          }
-          listLinesCaptured++;
-          continue;
-        }
-
-        const isBulletOrShortItem = /^[-•*▪▫‣⁃–—>]/.test(line) || line.length <= 85;
-        if (isBulletOrShortItem) {
-          splitAndAddClause(line);
-          listLinesCaptured++;
+        if (blockStrength === 'soft') {
+          extractSoftActs(line);
         } else {
-          inLimitListBlock = false;
+          splitHardClause(line);
         }
       }
     }
 
-    return results.slice(0, 40);
+    const all = Array.from(new Set([...hard, ...soft]));
+    return { hard, soft, all };
   }
+
 
   function stripLimitsFromProseForExcludeScan(aboutText) {
     if (!aboutText) return '';
-    const INLINE_LABEL_RE = /^(?:my\s+)?(?:hard\s+and\s+soft\s+limits?|hard\s+limits?|soft\s+limits?|limits?|hard\s+nos?|hard\s+passes|not\s+into|things?\s+i['’]?m\s+not\s+into|deal\s*breakers?|turn\s*offs?|will\s+not\s+do|won['’]?t\s+do|off\s+the\s+table)(?:\s*(?:\([^)]{1,48}\)|&[^:–—-]{1,32}))?\s*(?:include|are|:|-|–|—)/i;
-    const STANDALONE_HEADING_RE = /^(?:my\s+)?(?:hard\s+and\s+soft\s+limits?|hard\s+limits?|soft\s+limits?|limits?|hard\s+nos?|hard\s+passes|not\s+into|deal\s*breakers?|turn\s*offs?)(?:\s*(?:\([^)]{1,48}\)|&[^:]{1,32}))?\s*:?$/i;
+    const INLINE_LABEL_RE = /^(?:my\s+)?(?:hard\s+and\s+soft\s+limits?|hard\s+limits?|soft\s+limits?(?:\s*&\s*safety)?|limits?|hard\s+nos?|hard\s+passes|absolute\s+red\s+lines?|red\s+lines?|not\s+into|things?\s+i['’]?m\s+not\s+into|deal\s*breakers?|turn\s*offs?|will\s+not\s+do|won['’]?t\s+do|off\s+the\s+table)(?:\s*(?:\([^)]{1,64}\)|&[^:–—-]{1,32}))?\s*(?:include|are|:|-|–|—)/i;
+    const STANDALONE_HEADING_RE = /^(?:my\s+)?(?:hard\s+and\s+soft\s+limits?|hard\s+limits?|soft\s+limits?(?:\s*&\s*safety)?|limits?|hard\s+nos?|hard\s+passes|absolute\s+red\s+lines?|red\s+lines?|not\s+into|deal\s*breakers?|turn\s*offs?)(?:\s*(?:\([^)]{1,64}\)|&[^:]{1,32}))?\s*:?$/i;
     const NEXT_SECTION_HEADING_RE = /^(?:about(?:\s+me)?|into|curious|likes?|loves?|favou?rites?|yes(?:es)?|looking\s+for|seeking|turn\s*ons?|kinks?|fetishes|fantasies|bio|summary|rules|expectations|message\s+me|connecting|in\s+the\s+bedroom|sti\s+status)\b/i;
 
     const kept = [];
@@ -2183,7 +2321,7 @@
     if (!scope) {
       return {
         nonFetishFullText: '', aboutText: '', hasAbout: null, fetishesText: '',
-        fetishesInto: [], fetishesLimits: [], writingsText: '', headerText: '',
+        fetishesInto: [], fetishesLimits: [], hardLimits: [], softLimits: [], writingsText: '', headerText: '',
         age: null, gender: null, genderCategory: null, genderRole: null,
         location: null, relationships: null, orientation: null, lookingFor: null, groups: []
       };
@@ -2253,7 +2391,10 @@
 
     const limitSourceFallback = (activeView === 'about' && !aboutText) ? nonFetishFullText : '';
     const extractedProfileLimits = extractLimitsFromProfileText(aboutText, limitSourceFallback);
-    const combinedLimits = Array.from(new Set([...parsedFetishes.fetishesLimits, ...extractedProfileLimits]));
+    const combinedLimits = Array.from(new Set([
+      ...(parsedFetishes.fetishesLimits || []),
+      ...(extractedProfileLimits.all || [])
+    ]));
 
     return {
       nonFetishFullText: cleanSectionText(nonFetishFullText),
@@ -2262,6 +2403,8 @@
       fetishesText: parsedFetishes.fetishesText,
       fetishesInto: parsedFetishes.fetishesInto,
       fetishesLimits: combinedLimits,
+      hardLimits: extractedProfileLimits.hard || [],
+      softLimits: extractedProfileLimits.soft || [],
       writingsText,
       headerText,
       age: demos.age,
@@ -2359,27 +2502,135 @@
     return hits;
   }
 
-  function findLimitConflicts(limitsList, rules) {
-    if (!Array.isArray(limitsList) || limitsList.length === 0 || !rules || rules.length === 0) return [];
-    const lowerLimits = limitsList.join(' | ').toLowerCase();
+  function findLimitConflicts(limitsList, rules, hardList = null, softList = null) {
+    // Prefer structured hard/soft when available; fall back to flat limitsList
+    const hard = Array.isArray(hardList) && hardList.length > 0 ? hardList : (Array.isArray(limitsList) ? limitsList : []);
+    const soft = Array.isArray(softList) ? softList : [];
+    if ((hard.length === 0 && soft.length === 0) || !rules || rules.length === 0) return [];
+
+    const lowerHard = hard.join(' | ').toLowerCase();
+    const lowerSoft = soft.join(' | ').toLowerCase();
     const conflicts = [];
-    const seenTypes = new Set();
+    const seen = new Set();
 
     for (const rule of rules) {
       if (!rule || !Array.isArray(rule.keywords)) continue;
+      // Skip the user's own soft-limit rule as a "conflict" signal against others
+      if (rule.id === 'self_soft_limits') continue;
       const typeKey = (rule.id || rule.label || '').toLowerCase();
-      if (typeKey && seenTypes.has(typeKey)) continue;
 
       for (const kw of rule.keywords) {
         if (!kw || kw.length < 2) continue;
-        if (lowerLimits.includes(kw.toLowerCase())) {
-          if (typeKey) seenTypes.add(typeKey);
-          conflicts.push({ label: rule.label || 'Limit', keyword: kw });
+        const low = kw.toLowerCase();
+        const dedupe = `${typeKey}::${low}`;
+        if (seen.has(dedupe)) continue;
+        if (lowerHard.includes(low)) {
+          seen.add(dedupe);
+          conflicts.push({ label: rule.label || 'Limit', keyword: kw, strength: 'hard' });
+          break;
+        }
+        if (lowerSoft.includes(low)) {
+          seen.add(dedupe);
+          conflicts.push({ label: rule.label || 'Limit', keyword: kw, strength: 'soft' });
           break;
         }
       }
     }
     return conflicts;
+  }
+
+  // Summarize another person's parsed limits for UI badges
+  function getProfileLimitSummary(bio) {
+    if (!bio) return { hard: [], soft: [], all: [] };
+    const hard = Array.isArray(bio.hardLimits) ? bio.hardLimits : [];
+    const soft = Array.isArray(bio.softLimits) ? bio.softLimits : [];
+    let all = Array.isArray(bio.fetishesLimits) ? bio.fetishesLimits : [];
+    if (hard.length === 0 && soft.length === 0 && all.length > 0) {
+      return { hard: all, soft: [], all };
+    }
+    if (all.length === 0) all = Array.from(new Set([...hard, ...soft]));
+    return { hard, soft, all };
+  }
+
+  function getMyLimitsSummary() {
+    const self = Store.getSelfProfile();
+    const settings = Store.getSettings();
+    let hard = Array.isArray(self.hardLimits) ? [...self.hardLimits] : [];
+    let soft = Array.isArray(self.softLimits) ? [...self.softLimits] : [];
+
+    // Fallback: excludes are treated as my hard limits; self_soft_limits rule as soft
+    if (hard.length === 0 && Array.isArray(settings.excludeKeywords)) {
+      hard = settings.excludeKeywords.slice();
+    }
+    if (soft.length === 0) {
+      const softRule = (settings.highlightRules || []).find(r => r.id === 'self_soft_limits');
+      if (softRule && Array.isArray(softRule.keywords)) soft = softRule.keywords.slice();
+    }
+    return {
+      hard,
+      soft,
+      all: Array.from(new Set([...hard, ...soft]))
+    };
+  }
+
+  function termKeySet(list) {
+    const s = new Set();
+    for (const t of (list || [])) {
+      const k = normalizeTermKey(t);
+      if (k) s.add(k);
+    }
+    return s;
+  }
+
+  // Compare my limits vs theirs → overlap + one-sided lists
+  function compareLimitSets(mine, theirs) {
+    const myHard = termKeySet(mine.hard);
+    const mySoft = termKeySet(mine.soft);
+    const theirHard = termKeySet(theirs.hard);
+    const theirSoft = termKeySet(theirs.soft);
+
+    const keyToLabel = new Map();
+    for (const t of [...(mine.hard || []), ...(mine.soft || []), ...(theirs.hard || []), ...(theirs.soft || [])]) {
+      const k = normalizeTermKey(t);
+      if (k && !keyToLabel.has(k)) keyToLabel.set(k, t);
+    }
+    const label = (k) => keyToLabel.get(k) || k;
+
+    const hardOverlap = [];
+    const softOverlap = [];
+    for (const k of theirHard) {
+      if (myHard.has(k) || mySoft.has(k)) hardOverlap.push(label(k));
+    }
+    for (const k of theirSoft) {
+      if (myHard.has(k) || mySoft.has(k)) softOverlap.push(label(k));
+    }
+
+    return {
+      hardOverlap,
+      softOverlap,
+      overlap: Array.from(new Set([...hardOverlap, ...softOverlap])),
+      onlyTheirsHard: [...theirHard].filter(k => !myHard.has(k) && !mySoft.has(k)).map(label),
+      onlyTheirsSoft: [...theirSoft].filter(k => !myHard.has(k) && !mySoft.has(k)).map(label),
+      onlyMineHard: [...myHard].filter(k => !theirHard.has(k) && !theirSoft.has(k)).map(label),
+      onlyMineSoft: [...mySoft].filter(k => !theirHard.has(k) && !theirSoft.has(k)).map(label)
+    };
+  }
+
+  function makeLimitBadge(text, title, kind) {
+    const b = document.createElement('span');
+    const styles = {
+      theirHard: 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(185,28,28,0.16);color:#fca5a5;border:1px solid #7f1d1d;font-weight:500;',
+      theirSoft: 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(201,162,39,0.16);color:#c9a227;border:1px solid #8a7019;font-weight:500;',
+      myHard: 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(115,115,115,0.2);color:#d4d4d4;border:1px solid #737373;font-weight:500;',
+      mySoft: 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(115,115,115,0.14);color:#a3a3a3;border:1px solid #525252;font-weight:500;',
+      overlap: 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(52,211,153,0.14);color:#6ee7b7;border:1px solid rgba(52,211,153,0.4);font-weight:600;',
+      conflictHard: 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(185,28,28,0.22);color:#fecaca;border:1px solid #b91c1c;font-weight:700;',
+      conflictSoft: 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(201,162,39,0.2);color:#fde68a;border:1px solid #a16207;font-weight:600;'
+    };
+    b.style.cssText = styles[kind] || styles.theirHard;
+    b.textContent = text;
+    if (title) b.title = title;
+    return b;
   }
 
   function isAgeOutOfRange(age, settings) {
@@ -2832,12 +3083,66 @@
       toolbar.appendChild(badge);
     });
 
-    limitConflicts.forEach((conf) => {
-      const badge = document.createElement('span');
-      badge.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(201,162,39,0.18);color:#c9a227;border:1px solid #8a7019;font-weight:500;';
-      badge.textContent = `⚠ Limit: ${conf.keyword}`;
-      toolbar.appendChild(badge);
-    });
+    // Limits comparison: Mine / Theirs / Overlap / Conflict (all toggleable)
+    {
+      const s = Store.getSettings();
+      const theirSum = cachedBio ? getProfileLimitSummary(cachedBio) : { hard: [], soft: [], all: [] };
+      const mySum = getMyLimitsSummary();
+      const cmp = compareLimitSets(mySum, theirSum);
+
+      if (s.showTheirHardLimits && theirSum.hard.length > 0) {
+        const preview = theirSum.hard.slice(0, 4).join(', ') + (theirSum.hard.length > 4 ? ` +${theirSum.hard.length - 4}` : '');
+        toolbar.appendChild(makeLimitBadge(
+          `Theirs Hard: ${preview}`,
+          `Their hard limits:\n${theirSum.hard.join(', ')}`,
+          'theirHard'
+        ));
+      }
+      if (s.showTheirSoftLimits && theirSum.soft.length > 0) {
+        const preview = theirSum.soft.slice(0, 3).join(', ') + (theirSum.soft.length > 3 ? ` +${theirSum.soft.length - 3}` : '');
+        toolbar.appendChild(makeLimitBadge(
+          `Theirs Soft: ${preview}`,
+          `Their soft limits:\n${theirSum.soft.join(', ')}`,
+          'theirSoft'
+        ));
+      }
+      if (s.showMyLimits && mySum.hard.length > 0) {
+        const preview = mySum.hard.slice(0, 3).join(', ') + (mySum.hard.length > 3 ? ` +${mySum.hard.length - 3}` : '');
+        toolbar.appendChild(makeLimitBadge(
+          `Mine Hard: ${preview}`,
+          `Your hard limits:\n${mySum.hard.join(', ')}`,
+          'myHard'
+        ));
+      }
+      if (s.showMyLimits && mySum.soft.length > 0) {
+        const preview = mySum.soft.slice(0, 2).join(', ') + (mySum.soft.length > 2 ? ` +${mySum.soft.length - 2}` : '');
+        toolbar.appendChild(makeLimitBadge(
+          `Mine Soft: ${preview}`,
+          `Your soft limits:\n${mySum.soft.join(', ')}`,
+          'mySoft'
+        ));
+      }
+      if (s.showLimitOverlap && cmp.overlap.length > 0) {
+        const preview = cmp.overlap.slice(0, 4).join(', ') + (cmp.overlap.length > 4 ? ` +${cmp.overlap.length - 4}` : '');
+        toolbar.appendChild(makeLimitBadge(
+          `Overlap: ${preview}`,
+          `Limits you both share (compatible boundaries):\n${cmp.overlap.join(', ')}`,
+          'overlap'
+        ));
+      }
+      if (s.showLimitConflicts && limitConflicts && limitConflicts.length > 0) {
+        limitConflicts.forEach((conf) => {
+          const isHard = conf.strength === 'hard';
+          toolbar.appendChild(makeLimitBadge(
+            isHard ? `Conflict Hard: ${conf.keyword}` : `Conflict Soft: ${conf.keyword}`,
+            isHard
+              ? `Your interest/rule hits their HARD limit: ${conf.keyword}`
+              : `Your interest/rule hits their soft limit: ${conf.keyword}`,
+            isHard ? 'conflictHard' : 'conflictSoft'
+          ));
+        });
+      }
+    }
 
     excludedHits.forEach((kw) => {
       const badge = document.createElement('span');
@@ -3214,7 +3519,7 @@
     const excludeSourceText = getExcludeSearchText(cachedBio, itemText);
     const excludedHits = isExempt ? [] : findSimpleMatches(excludeSourceText, settings.excludeKeywords);
     const ruleHits = findRuleMatches(itemText, bioText, settings.highlightRules);
-    const limitConflicts = cachedBio ? findLimitConflicts(cachedBio.fetishesLimits, settings.highlightRules) : [];
+    const limitConflicts = cachedBio ? findLimitConflicts(cachedBio.fetishesLimits, settings.highlightRules, cachedBio.hardLimits, cachedBio.softLimits) : [];
 
     const sig = JSON.stringify({
       userKey,
@@ -3406,6 +3711,8 @@
       const prevSelf = Store.getSelfProfile();
       const nextInto = liveData.fetishesInto.length > 0 ? liveData.fetishesInto : (prevSelf.fetishesInto || []);
       const nextLimits = liveData.fetishesLimits.length > 0 ? liveData.fetishesLimits : (prevSelf.fetishesLimits || []);
+      const nextHard = (liveData.hardLimits && liveData.hardLimits.length > 0) ? liveData.hardLimits : (prevSelf.hardLimits || []);
+      const nextSoft = (liveData.softLimits && liveData.softLimits.length > 0) ? liveData.softLimits : (prevSelf.softLimits || []);
       const nextGroups = liveData.groups.length > 0 ? liveData.groups : (prevSelf.groups || []);
 
       const updatedSelf = Store.saveSelfProfile({
@@ -3416,6 +3723,8 @@
         location: liveData.location || prevSelf.location || null,
         fetishesInto: nextInto,
         fetishesLimits: nextLimits,
+        hardLimits: nextHard,
+        softLimits: nextSoft,
         groups: nextGroups,
         lookingFor: liveData.lookingFor || prevSelf.lookingFor || null
       });
@@ -3456,7 +3765,7 @@
 
       const stats = document.createElement('span');
       stats.style.color = '#cbd5e1';
-      stats.textContent = `${updatedSelf.fetishesInto.length} Into kinks • ${updatedSelf.fetishesLimits.length} Atomic Limits • ${updatedSelf.groups.length} Groups`;
+      stats.textContent = `${updatedSelf.fetishesInto.length} Into • ${(updatedSelf.hardLimits || []).length} Hard / ${(updatedSelf.softLimits || []).length} Soft Limits • ${updatedSelf.groups.length} Groups`;
 
       const learnAllBtn = document.createElement('button');
       learnAllBtn.type = 'button';
@@ -3465,7 +3774,7 @@
       learnAllBtn.title = 'Infer gender preferences from Orientation, set Local Region from your Location, and sync Into kinks & atomic Limits';
       learnAllBtn.addEventListener('click', () => {
         const res = Store.learnPreferencesFromSelf(Store.getSelfProfile(), true);
-        CardNavigator.showToast(`Configured filters from /${displayHandle}: ${res.intoAdded} Shared Kinks & ${res.limitsAdded} Limits`);
+        CardNavigator.showToast(`Configured filters from /${displayHandle}: ${res.intoAdded} Shared Kinks, ${res.hardAdded || res.limitsAdded} Hard Limits, ${res.softAdded || 0} Soft Limits`);
         withObserverPaused(enhanceProfilePage);
       });
 
@@ -3630,7 +3939,7 @@
       const excludeSourceText = getExcludeSearchText(latestBio, liveData.aboutText || '');
       const excludedHits = findSimpleMatches(excludeSourceText, settings.excludeKeywords);
       const ruleHits = findRuleMatches('', scanText, settings.highlightRules);
-      const limitConflicts = latestBio ? findLimitConflicts(latestBio.fetishesLimits, settings.highlightRules) : [];
+      const limitConflicts = latestBio ? findLimitConflicts(latestBio.fetishesLimits, settings.highlightRules, latestBio.hardLimits, latestBio.softLimits) : [];
       const missingAbout = Boolean(settings.hideNoAbout && latestBio && latestBio.hasAbout === false);
       const ageRejected = isAgeOutOfRange(demos.age, settings);
       const genderRejected = isGenderRejected(demos.genderCategory, settings);
@@ -3750,7 +4059,7 @@
       const scanText = cachedBio ? cachedBio.text : '';
       const excludeSourceText = getExcludeSearchText(cachedBio);
       const ruleHits = findRuleMatches('', scanText, settings.highlightRules);
-      const limitConflicts = cachedBio ? findLimitConflicts(cachedBio.fetishesLimits, settings.highlightRules) : [];
+      const limitConflicts = cachedBio ? findLimitConflicts(cachedBio.fetishesLimits, settings.highlightRules, cachedBio.hardLimits, cachedBio.softLimits) : [];
       const excludedHits = findSimpleMatches(excludeSourceText, settings.excludeKeywords);
       const sharedGroups = getSharedOrNotableGroups(cachedBio?.groups || record.groups || []);
 
@@ -3980,8 +4289,13 @@
         const fetishesInto = c && Array.isArray(c.fetishesInto) ? c.fetishesInto : [];
 
         let fetishesLimits = c && Array.isArray(c.fetishesLimits) ? c.fetishesLimits : [];
-        if (fetishesLimits.length === 0 && (aboutText || bioText)) {
-          fetishesLimits = extractLimitsFromProfileText(aboutText, bioText);
+        let hardLimits = c && Array.isArray(c.hardLimits) ? c.hardLimits : [];
+        let softLimits = c && Array.isArray(c.softLimits) ? c.softLimits : [];
+        if ((fetishesLimits.length === 0 || (hardLimits.length === 0 && softLimits.length === 0)) && (aboutText || bioText)) {
+          const _lim = extractLimitsFromProfileText(aboutText, bioText);
+          if (fetishesLimits.length === 0) fetishesLimits = _lim.all || [];
+          if (hardLimits.length === 0) hardLimits = _lim.hard || [];
+          if (softLimits.length === 0) softLimits = _lim.soft || [];
         }
 
         const hasCache = Boolean(c && (bioText.length > 0 || c.hasAbout !== null || fetishesLimits.length > 0));
@@ -4000,7 +4314,7 @@
 
         const excludeSourceText = getExcludeSearchText(c);
         const ruleHits = findRuleMatches('', bioText, settings.highlightRules);
-        const limitConflicts = findLimitConflicts(fetishesLimits, settings.highlightRules);
+        const limitConflicts = findLimitConflicts(fetishesLimits, settings.highlightRules, hardLimits, softLimits);
         const excludedHits = findSimpleMatches(excludeSourceText, settings.excludeKeywords);
 
         const daysSinceContact = daysSinceIsoDate(u.lastContacted);
@@ -4026,7 +4340,7 @@
           manualGender: u.manualGender || null, genderRole, location, relationships, lookingFor,
           groups, sharedGroups, isLocal: isLocationLocal(location, settings),
           hasCache, hasAbout, noAbout, hasFetishes, aboutText, writingsText, fetishesText,
-          fetishesInto, fetishesLimits, fullText: bioText, ruleHits, limitConflicts, excludedHits
+          fetishesInto, fetishesLimits, hardLimits, softLimits, fullText: bioText, ruleHits, limitConflicts, excludedHits
         });
       }
 
@@ -4064,7 +4378,13 @@
         if (e.lastContacted) lines.push(`* **Last Contacted:** ${e.lastContacted} (${e.daysSinceContact}d ago)`);
         else if (e.lastSeen) lines.push(`* **Last Viewed:** ${e.lastSeen}`);
         if (e.ruleHits.length > 0) lines.push(`* **Matches:** ${e.ruleHits.map(h => `${h.label} (${h.keyword})`).join(', ')}`);
-        if (e.fetishesLimits.length > 0) lines.push(`* **Profile Limits:** ${e.fetishesLimits.join(', ')}`);
+        const _hs = getProfileLimitSummary(e);
+        const _mine = getMyLimitsSummary();
+        const _cmp = compareLimitSets(_mine, _hs);
+        if (_hs.hard.length > 0) lines.push(`* **Theirs — Hard:** ${_hs.hard.join(', ')}`);
+        if (_hs.soft.length > 0) lines.push(`* **Theirs — Soft:** ${_hs.soft.join(', ')}`);
+        else if (e.fetishesLimits && e.fetishesLimits.length > 0) lines.push(`* **Theirs — Limits:** ${e.fetishesLimits.join(', ')}`);
+        if (_cmp.overlap.length > 0) lines.push(`* **Overlap (shared limits):** ${_cmp.overlap.join(', ')}`);
         if (e.limitConflicts.length > 0) lines.push(`* **Limit Conflicts:** ${e.limitConflicts.map(c => c.keyword).join(', ')}`);
         if (e.excludedHits.length > 0) lines.push(`* **Excludes:** ${e.excludedHits.join(', ')}`);
         if (e.sharedGroups.length > 0) lines.push(`* **Shared Groups:** ${e.sharedGroups.join(', ')}`);
@@ -5015,6 +5335,22 @@
               <label class="inline-label">
                 <input type="checkbox" id="in-noabout"> Hide cached profiles with no "About" section
               </label>
+              <div class="rules-header" style="margin-top:8px;"><span>Limit Comparison Badges</span></div>
+              <label class="inline-label">
+                <input type="checkbox" id="in-their-hard"> Show <strong>their</strong> hard limits
+              </label>
+              <label class="inline-label">
+                <input type="checkbox" id="in-their-soft"> Show <strong>their</strong> soft limits
+              </label>
+              <label class="inline-label">
+                <input type="checkbox" id="in-my-limits"> Show <strong>my</strong> limits (for reference)
+              </label>
+              <label class="inline-label">
+                <input type="checkbox" id="in-limit-overlap"> Show <strong>overlap</strong> (limits you both share)
+              </label>
+              <label class="inline-label">
+                <input type="checkbox" id="in-limit-conflict"> Show <strong>conflicts</strong> (your interests vs their limits)
+              </label>
             </div>
 
             <div class="section-box">
@@ -5257,6 +5593,11 @@
         $('in-ttl').value = s.bioCacheTtlDays;
         $('in-notes').checked = Boolean(s.showNotesInline);
         $('in-noabout').checked = Boolean(s.hideNoAbout);
+        if ($('in-their-hard')) $('in-their-hard').checked = s.showTheirHardLimits !== false;
+        if ($('in-their-soft')) $('in-their-soft').checked = s.showTheirSoftLimits !== false;
+        if ($('in-my-limits')) $('in-my-limits').checked = Boolean(s.showMyLimits);
+        if ($('in-limit-overlap')) $('in-limit-overlap').checked = s.showLimitOverlap !== false;
+        if ($('in-limit-conflict')) $('in-limit-conflict').checked = s.showLimitConflicts !== false;
         $('in-exclude').value = s.excludeKeywords.join(', ');
         $('in-kb-nav').checked = Boolean(s.keybinds.navEnabled);
 
@@ -5331,7 +5672,7 @@
         const res = Store.learnPreferencesFromSelf(selfProf, true);
         syncFormFromStore();
         runAll();
-        $('hud-status').textContent = `✓ Learned preferences (${res.intoAdded} Shared Kinks, ${res.limitsAdded} Limits)`;
+        $('hud-status').textContent = `✓ Learned preferences (${res.intoAdded} Shared Kinks, ${res.hardAdded || res.limitsAdded} Hard, ${res.softAdded || 0} Soft Limits)`;
         setTimeout(() => { $('hud-status').textContent = ''; }, 3000);
       });
 
@@ -5487,6 +5828,11 @@
           bioCacheTtlDays: Math.max(1, parseInt($('in-ttl').value, 10) || 14),
           showNotesInline: $('in-notes').checked,
           hideNoAbout: $('in-noabout').checked,
+          showTheirHardLimits: $('in-their-hard') ? $('in-their-hard').checked : true,
+          showTheirSoftLimits: $('in-their-soft') ? $('in-their-soft').checked : true,
+          showMyLimits: $('in-my-limits') ? $('in-my-limits').checked : false,
+          showLimitOverlap: $('in-limit-overlap') ? $('in-limit-overlap').checked : true,
+          showLimitConflicts: $('in-limit-conflict') ? $('in-limit-conflict').checked : true,
           highlightRules: collectedRules,
           messageTemplates: collectedTpls,
           keybinds: nextKeybinds,
